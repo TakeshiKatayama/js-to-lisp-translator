@@ -3,6 +3,7 @@
 
 (load (merge-pathnames "types.lisp" *load-pathname*))
 (load (merge-pathnames "lexer.lisp" *load-pathname*))
+(load (merge-pathnames "parser.lisp" *load-pathname*))
 
 (in-package :js-to-lisp)
 
@@ -13,13 +14,27 @@
       (read-sequence buffer stream)
       buffer)))
 
-(defun print-tokens (tokens)
-  "Печатает token построчно: type / value."
-  (dolist (token tokens)
-    (format t "~a / ~s~%" (token-type token) (token-value token))))
+(defun print-node-line (node indent)
+  "Печатает одну строку узла AST с отступом indent."
+  (format t "~%~v,t~a ~a ~s"
+          indent
+          (node-construct node)
+          (node-priority node)
+          (node-value node)))
+
+(defun print-node (node &optional (indent 0))
+  "Рекурсивно печатает узел AST и его детей."
+  (print-node-line node indent)
+  (dolist (child (node-children node))
+    (print-node child (+ indent 2))))
+
+(defun translate-file (path)
+  "Читает JS-файл path и возвращает узел program."
+  (parse (lex (read-file-string path))))
 
 (defun main (path)
-  "Токенизирует JS-файл path и печатает результат."
-  (print-tokens (lex (read-file-string path))))
+  "Транслирует JS-файл path: lex → parse → печать AST."
+  (print-node (translate-file path))
+  (terpri))
 
 (main (merge-pathnames "test.js" *load-pathname*))

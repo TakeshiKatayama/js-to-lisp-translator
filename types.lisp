@@ -93,7 +93,8 @@
    #:+construct-literal-bool+
    #:+construct-literal-string+
    #:+construct-group+
-   #:+constructs-level-10+))
+   #:+constructs-level-10+
+   #:parse))
 
 (in-package :js-to-lisp)
 
