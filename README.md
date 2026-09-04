@@ -479,6 +479,83 @@ Operators — копим в буфер, сверка с +js-operators+. Если
 
 Списки в types, логика в lexer.
 
+## И так я написал минимальную версию лексера кажется мой метод сработал отлично
+
+результат прогона этого выражения:
+
+```javascript
+let y = -6
+const x = 10
+if (x == 10 || x == 5)
+{
+    y = ((y*2)/3)%2
+}
+else
+{
+    y = (x + y - 5)%2
+    y = y - x *2
+}
+```
+
+получился такой:
+
+```
+KEYWORD / "let"
+IDENTIFIER / "y"
+OPERATOR / "="
+NUMBER / -6
+KEYWORD / "const"
+IDENTIFIER / "x"
+OPERATOR / "="
+NUMBER / 10
+KEYWORD / "if"
+PUNCT / "("
+IDENTIFIER / "x"
+OPERATOR / "=="
+NUMBER / 10
+OPERATOR / "||"
+IDENTIFIER / "x"
+OPERATOR / "=="
+NUMBER / 5
+PUNCT / ")"
+PUNCT / "{"
+IDENTIFIER / "y"
+OPERATOR / "="
+PUNCT / "("
+PUNCT / "("
+IDENTIFIER / "y"
+OPERATOR / "*"
+NUMBER / 2
+PUNCT / ")"
+OPERATOR / "/"
+NUMBER / 3
+PUNCT / ")"
+OPERATOR / "%"
+NUMBER / 2
+PUNCT / "}"
+KEYWORD / "else"
+PUNCT / "{"
+IDENTIFIER / "y"
+OPERATOR / "="
+PUNCT / "("
+IDENTIFIER / "x"
+OPERATOR / "+"
+IDENTIFIER / "y"
+OPERATOR / "-"
+NUMBER / 5
+PUNCT / ")"
+OPERATOR / "%"
+NUMBER / 2
+IDENTIFIER / "y"
+OPERATOR / "="
+IDENTIFIER / "y"
+OPERATOR / "-"
+IDENTIFIER / "x"
+OPERATOR / "*"
+NUMBER / 2
+PUNCT / "}"
+```
+
 ### Тесты
 
 Концептуально я хочу построить тесты таким образом: чтобы если хоть один тест не прошел я обрывал выполнение программы. Думаю это важно для корректной работы программы.

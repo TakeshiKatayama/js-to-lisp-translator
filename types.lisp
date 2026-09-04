@@ -41,6 +41,8 @@
    #:+token-punct+
    #:+token-types+
    #:+js-keywords+
+   #:+js-operators+
+   #:+js-punct-chars+
    #:lex
    #:+priority-level-1+
    #:+priority-level-2+
@@ -152,6 +154,15 @@
         "true"
         "false")
   "Зарезервированные слова. else — для парсинга if, отдельного construct нет.")
+
+(defconstant +js-operators+
+  '("===" "!==" "==" "!=" "<=" ">=" "||" "&&"
+    "=" "+" "-" "*" "/" "%" "<" ">" "!")
+  "Операторы JS. Длинные строки — первыми в списке.")
+
+(defconstant +js-punct-chars+
+  '(#\; #\{ #\} #\( #\) #\[ #\])
+  "Символы пунктуации JS — один символ на token.")
 
 ;;;; Приоритеты AST (README, таблица 1–10). Совпадают с node-priority.
 
