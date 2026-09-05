@@ -94,8 +94,7 @@
    #:+construct-literal-string+
    #:+construct-group+
    #:+constructs-level-10+
-   #:parse
-   #:check-program))
+   #:parse))
 
 (in-package :js-to-lisp)
 
