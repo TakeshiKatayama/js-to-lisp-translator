@@ -4,6 +4,7 @@
 (load (merge-pathnames "types.lisp" *load-pathname*))
 (load (merge-pathnames "lexer.lisp" *load-pathname*))
 (load (merge-pathnames "parser.lisp" *load-pathname*))
+(load (merge-pathnames "semantics.lisp" *load-pathname*))
 
 (in-package :js-to-lisp)
 
@@ -29,12 +30,13 @@
     (print-node child (+ indent 2))))
 
 (defun translate-file (path)
-  "Читает JS-файл path и возвращает узел program."
-  (parse (lex (read-file-string path))))
+  "Читает JS-файл path: lex → parse → check-program."
+  (check-program (parse (lex (read-file-string path)))))
 
 (defun main (path)
-  "Транслирует JS-файл path: lex → parse → печать AST."
+  "Транслирует JS-файл path: lex → parse → semantics → печать AST."
   (print-node (translate-file path))
+  (format t "~%Semantics: OK~%")
   (terpri))
 
 (main (merge-pathnames "test.js" *load-pathname*))

@@ -1,11 +1,11 @@
-let y = -6
-const x = 10
-if (x == 10 || x == 5)
-{
-    y = ((y*2)/3)%2
+const a = -10
+let b =-10 + a
+a = 15 + a
+b = a + b
+if (true) {
+  let c = 10
+  a = a + b
+  b = b + a
+  c = a + b + c
 }
-else
-{
-    y = (x + y - 5)%2
-    y = y - x *2
-}
+b =a + b + c
