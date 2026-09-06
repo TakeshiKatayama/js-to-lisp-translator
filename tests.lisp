@@ -6,6 +6,7 @@
 (load (merge-pathnames "types.lisp" *load-pathname*))
 (load (merge-pathnames "lexer.lisp" *load-pathname*))
 (load (merge-pathnames "parser.lisp" *load-pathname*))
+(load (merge-pathnames "semantics.lisp" *load-pathname*))
 
 (defpackage :js-to-lisp-tests
   (:use :cl :js-to-lisp))
@@ -619,6 +620,213 @@
                    (build-parser-edge-cases)))
 
 ;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — assert ok / error
+;;;; ============================================================
+
+(defun print-sem-pass (name input status)
+  "Печатает успешный результат теста семантики."
+  (format t "~&[PASS] ~a (~a)~%  input: ~s~%" name status input))
+
+(defun print-sem-fail (name input detail)
+  "Печатает провал теста семантики перед error."
+  (format t "~&[FAIL] ~a~%  input: ~s~%  ~a~%" name input detail))
+
+(defun assert-sem-ok (name input)
+  "Проверяет что check-program принимает input без ошибки."
+  (check-program (parse (lex input)))
+  (print-sem-pass name input "ok"))
+
+(defun assert-sem-error (name input expected-part)
+  "Проверяет что check-program падает с фрагментом expected-part в тексте."
+  (handler-case
+      (progn (check-program (parse (lex input)))
+             (print-sem-fail name input "ожидалась ошибка семантики")
+             (error "Тест ~s провален: ошибки не было" name))
+    (error (condition)
+      (let ((message (format nil "~a" condition)))
+        (unless (search expected-part message)
+          (print-sem-fail name input
+                          (format nil "ожидание ~s, получено ~s"
+                                  expected-part message))
+          (error "Тест ~s провален: неверное сообщение" name))
+        (print-sem-pass name input "error")))))
+
+(defun run-sem-ok-cases (section-name cases)
+  "Запускает список успешных кейсов семантики."
+  (format t "~&==== ~a (~a) ====~%" section-name (length cases))
+  (dolist (case cases)
+    (destructuring-bind (name input) case
+      (assert-sem-ok name input))))
+
+(defun run-sem-error-cases (section-name cases)
+  "Запускает список кейсов семантики с ожидаемой ошибкой."
+  (format t "~&==== ~a (~a) ====~%" section-name (length cases))
+  (dolist (case cases)
+    (destructuring-bind (name input expected-part) case
+      (assert-sem-error name input expected-part))))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — 1 объявления (ok)
+;;;; ============================================================
+
+(defun build-sem-decl-ok-cases ()
+  "Создаёт успешные кейсы объявлений let и const."
+  (list
+   (list "decl: const" "const a = 10")
+   (list "decl: let" "let a = 10")
+   (list "decl: const then let" "const a = 10 let b = 20")))
+
+(defun run-sem-decl-ok-tests ()
+  "Запускает успешные кейсы объявлений."
+  (run-sem-ok-cases "СЕМАНТИКА: 1 объявления"
+                    (build-sem-decl-ok-cases)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — 2 использование (ok + error)
+;;;; ============================================================
+
+(defun build-sem-usage-ok-cases ()
+  "Создаёт успешные кейсы чтения объявленного имени."
+  (list
+   (list "usage: atom in decl init" "let a = 1 let b = a")
+   (list "usage: atom in expr" "let a = 10 let b = a + 1")
+   (list "usage: atom in if cond" "let a = 1 if (a == 1) { }")))
+
+(defun build-sem-usage-error-cases ()
+  "Создаёт кейсы чтения необъявленного имени."
+  (list
+   (list "usage: undeclared assign"
+         "a = 10"
+         "необъявленное имя")
+   (list "usage: undeclared in decl init"
+         "let b = a"
+         "необъявленное имя")
+   (list "usage: use before declare"
+         "let b = a let a = 1"
+         "необъявленное имя")))
+
+(defun run-sem-usage-tests ()
+  "Запускает кейсы использования имён."
+  (run-sem-ok-cases "СЕМАНТИКА: 2 использование ok"
+                    (build-sem-usage-ok-cases))
+  (run-sem-error-cases "СЕМАНТИКА: 2 использование error"
+                       (build-sem-usage-error-cases)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — 3 присваивание (ok + error)
+;;;; ============================================================
+
+(defun build-sem-assign-ok-cases ()
+  "Создаёт успешные кейсы присваивания let-имени."
+  (list
+   (list "assign: let" "let a = 10 a = 5")
+   (list "assign: let in block to outer" "let a = 1 if (true) { a = 2 }")))
+
+(defun build-sem-assign-error-cases ()
+  "Создаёт кейсы запрещённого присваивания const."
+  (list
+   (list "assign: const"
+         "const a = 10 a = 20"
+         "const \"a\" нельзя изменять")
+   (list "assign: const in block"
+         "const a = 10 if (true) { a = 1 }"
+         "const \"a\" нельзя изменять")))
+
+(defun run-sem-assign-tests ()
+  "Запускает кейсы присваивания."
+  (run-sem-ok-cases "СЕМАНТИКА: 3 присваивание ok"
+                    (build-sem-assign-ok-cases))
+  (run-sem-error-cases "СЕМАНТИКА: 3 присваивание error"
+                       (build-sem-assign-error-cases)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — 4 области (ok + error)
+;;;; ============================================================
+
+(defun build-sem-scope-ok-cases ()
+  "Создаёт успешные кейсы block scope и shadowing."
+  (list
+   (list "scope: block local" "if (true) { let c = 10 }")
+   (list "scope: outer after block" "let a = 1 if (true) { let b = 2 } a = 3")
+   (list "scope: shadowing" "let a = 1 if (true) { let a = 2 }")))
+
+(defun build-sem-scope-error-cases ()
+  "Создаёт кейсы имени вне области block."
+  (list
+   (list "scope: local outside block"
+         "if (true) { let c = 1 } let b = c"
+         "необъявленное имя")
+   (list "scope: local in assign rhs"
+         "let a = 1 if (true) { let c = 2 } a = c"
+         "необъявленное имя")))
+
+(defun run-sem-scope-tests ()
+  "Запускает кейсы областей видимости."
+  (run-sem-ok-cases "СЕМАНТИКА: 4 области ok"
+                    (build-sem-scope-ok-cases))
+  (run-sem-error-cases "СЕМАНТИКА: 4 области error"
+                       (build-sem-scope-error-cases)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — 5 прочие ошибки
+;;;; ============================================================
+
+(defun build-sem-other-error-cases ()
+  "Создаёт кейсы TDZ и повторного объявления."
+  (list
+   (list "other: TDZ let"
+         "let a = a"
+         "необъявленное имя")
+   (list "other: redeclare"
+         "let a = 1 let a = 2"
+         "повторное объявление")))
+
+(defun run-sem-other-error-tests ()
+  "Запускает прочие ошибки семантики."
+  (run-sem-error-cases "СЕМАНТИКА: 5 прочие error"
+                       (build-sem-other-error-cases)))
+
+(defun count-sem-decl-ok-cases ()
+  "Считает успешные кейсы объявлений."
+  (length (build-sem-decl-ok-cases)))
+
+(defun count-sem-usage-ok-cases ()
+  "Считает успешные кейсы использования."
+  (length (build-sem-usage-ok-cases)))
+
+(defun count-sem-usage-error-cases ()
+  "Считает ошибочные кейсы использования."
+  (length (build-sem-usage-error-cases)))
+
+(defun count-sem-assign-ok-cases ()
+  "Считает успешные кейсы присваивания."
+  (length (build-sem-assign-ok-cases)))
+
+(defun count-sem-assign-error-cases ()
+  "Считает ошибочные кейсы присваивания."
+  (length (build-sem-assign-error-cases)))
+
+(defun count-sem-scope-ok-cases ()
+  "Считает успешные кейсы областей."
+  (length (build-sem-scope-ok-cases)))
+
+(defun count-sem-scope-error-cases ()
+  "Считает ошибочные кейсы областей."
+  (length (build-sem-scope-error-cases)))
+
+(defun count-sem-other-error-cases ()
+  "Считает прочие ошибочные кейсы."
+  (length (build-sem-other-error-cases)))
+
+(defun run-semantics-tests ()
+  "Запускает все автотесты семантики."
+  (run-sem-decl-ok-tests)
+  (run-sem-usage-tests)
+  (run-sem-assign-tests)
+  (run-sem-scope-tests)
+  (run-sem-other-error-tests))
+
+;;;; ============================================================
 ;;;; ЗАПУСК
 ;;;; ============================================================
 
@@ -670,7 +878,15 @@
                   (count-parser-precedence-cases)
                   (count-parser-multi-stmt-cases)
                   (count-parser-complex-cases)
-                  (count-parser-edge-cases))))
+                  (count-parser-edge-cases)
+                  (count-sem-decl-ok-cases)
+                  (count-sem-usage-ok-cases)
+                  (count-sem-usage-error-cases)
+                  (count-sem-assign-ok-cases)
+                  (count-sem-assign-error-cases)
+                  (count-sem-scope-ok-cases)
+                  (count-sem-scope-error-cases)
+                  (count-sem-other-error-cases))))
     (run-generated-lexer-tests)
     (run-manual-lexer-tests)
     (run-parser-node-type-tests)
@@ -680,6 +896,7 @@
     (run-parser-multi-stmt-tests)
     (run-parser-complex-tests)
     (run-parser-edge-tests)
+    (run-semantics-tests)
     (format t "~&==== ИТОГ ====~%OK: ~a tests~%" total)))
 
 (run-all-tests)
