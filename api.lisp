@@ -58,9 +58,15 @@
       (js-transform input)
       input))
 
+(defun forms-for-file (input)
+  "Строка JS или формы → список форм с format для печати результата в файле."
+  (if (stringp input)
+      (transform-program-for-file (js-check input))
+      (mapcar #'wrap-top-level-print input)))
+
 (defun js-generate (input)
   "Строка JS или список форм → текст файла .lisp."
-  (generate-program (ensure-forms input)))
+  (generate-program (forms-for-file input)))
 
 (defun js-run (input)
   "Строка JS или список форм → выполняет формы по порядку, отдаёт последнее значение."

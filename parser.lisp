@@ -109,6 +109,10 @@
   (ast-node +construct-literal-bool+ +priority-level-10+
             :value (if (string= keyword "true") :true :false)))
 
+(defun make-literal-string-node (text)
+  "Создаёт literal-string node для текста text."
+  (ast-node +construct-literal-string+ +priority-level-10+ :value text))
+
 (declaim (ftype (function (parser-state) node) parse-expression))
 (declaim (ftype (function (parser-state) node) parse-statement))
 
@@ -135,6 +139,9 @@
       ((token-keyword-is token "false")
        (parser-advance state)
        (make-literal-bool-node "false"))
+      ((token-type-is token +token-string+)
+       (parser-advance state)
+       (make-literal-string-node (token-value token)))
       ((token-punct-is token #\()
        (parse-group state))
       (t

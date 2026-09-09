@@ -240,6 +240,11 @@
   (declare (ignore node))
   state)
 
+(defun check-literal-string (node state)
+  "Проверяет literal-string: правил имён нет."
+  (declare (ignore node))
+  state)
+
 (defun check-group (node state)
   "Проверяет group: выражение внутри скобок."
   (check-expression (first (node-children node)) state))
@@ -282,7 +287,7 @@
       ((eq kind +construct-call+)
        (check-call node state))
       ((eq kind +construct-literal-string+)
-       (sem-fail (format nil "выражение ~a пока не поддерживается" kind)))
+       (check-literal-string node state))
       (t (sem-fail (format nil "неизвестное выражение ~a" kind))))))
 
 ;;;; ============================================================

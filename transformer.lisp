@@ -390,6 +390,17 @@
       (transform-defparameter node state)
       (transform-statement node state)))
 
+(defun top-level-definition-p (form)
+  "Проверяет, что форма — объявление defun/defparameter, а не вычисление."
+  (and (consp form)
+       (member (car form) '(defun defparameter defvar) :test #'eq)))
+
+(defun wrap-top-level-print (form)
+  "Оборачивает верхний вызов в format, чтобы load файла показал результат."
+  (if (top-level-definition-p form)
+      form
+      (list 'format t "~s~%" form)))
+
 (defun transform-program (node)
   "program → список форм: сначала все defun, затем остальные инструкции по порядку."
   (let ((state (make-transform-state))
@@ -398,3 +409,7 @@
                     (remove-if-not #'function-node-p children))
             (mapcar (lambda (child) (transform-top-statement child state))
                     (remove-if #'function-node-p children)))))
+
+(defun transform-program-for-file (node)
+  "program → формы для .lisp файла: верхние вызовы обёрнуты в format."
+  (mapcar #'wrap-top-level-print (transform-program node)))

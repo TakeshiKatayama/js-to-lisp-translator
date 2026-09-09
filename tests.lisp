@@ -48,46 +48,89 @@
           do (return index)
         finally (return nil)))
 
-(defun token-line (token)
-  "Форматирует token в строку type / value."
-  (format nil "~a / ~s" (token-type token) (token-value token)))
+(defconstant +test-line-max-len+ 72
+  "Максимальная длина строки in/out в выводе PASS.")
 
-(defun tokens->lines (tokens)
-  "Преобразует список token в строки type / value."
-  (mapcar #'token-line tokens))
+(defun shorten-display (text)
+  "Укорачивает длинный текст для компактного вывода PASS."
+  (cond
+    ((null text) "")
+    ((and (stringp text) (<= (length text) +test-line-max-len+)) text)
+    ((stringp text)
+     (concatenate 'string (subseq text 0 (- +test-line-max-len+ 3)) "..."))
+    (t (princ-to-string text))))
 
-(defun print-test-pass (name input tokens)
-  "Печатает успешный результат одного теста."
-  (format t "~&[PASS] ~a~%  input: ~s~%" name input)
-  (dolist (line (tokens->lines tokens))
-    (format t "  ~a~%" line)))
+(defun print-section-header (section-name count)
+  "Печатает заголовок секции тестов."
+  (format t "~&==== ~a (~a) ====~%" section-name count))
 
-(defun print-test-fail (name input specs tokens index)
-  "Печатает провал одного теста перед error."
-  (format t "~&[FAIL] ~a~%  input: ~s~%  token ~a~%" name input index)
-  (format t "  ожидание:~%")
-  (dolist (spec specs)
-    (format t "    ~a / ~s~%" (spec-type spec) (spec-value spec)))
-  (format t "  получено:~%")
-  (dolist (line (tokens->lines tokens))
-    (format t "    ~a~%" line)))
+(defun format-test-index (index total)
+  "Форматирует номер теста в секции, например [ 1/10]."
+  (format nil "[~2d/~a]" index total))
 
-(defun assert-lex (name input specs)
+(defun print-case-pass (index total name input out)
+  "Печатает успешный тест: индекс, имя, вход, результат."
+  (format t "~&~a PASS  ~a~%" (format-test-index index total) name)
+  (format t "        in:  ~s~%" (shorten-display input))
+  (format t "        out: ~a~%" (shorten-display out)))
+
+(defun print-case-fail (index total name input &rest detail-lines)
+  "Печатает провал теста с дополнительными строками detail-lines."
+  (format t "~&~a FAIL  ~a~%" (format-test-index index total) name)
+  (format t "        in:  ~s~%" input)
+  (dolist (line detail-lines)
+    (format t "        ~a~%" line)))
+
+(defun token-type-tag (type)
+  "Сокращает категорию token для компактного вывода."
+  (cond
+    ((eq type +token-keyword+) "kw")
+    ((eq type +token-identifier+) "id")
+    ((eq type +token-number+) "num")
+    ((eq type +token-string+) "str")
+    ((eq type +token-operator+) "op")
+    ((eq type +token-punct+) "punct")
+    (t (format nil "~a" type))))
+
+(defun token-compact (token)
+  "Форматирует один token в вид tag:value."
+  (format nil "~a:~s" (token-type-tag (token-type token)) (token-value token)))
+
+(defun spec-compact (spec)
+  "Форматирует эталон token в вид tag:value."
+  (format nil "~a:~s" (token-type-tag (spec-type spec)) (spec-value spec)))
+
+(defun tokens-compact (tokens)
+  "Сжимает список token в одну строку через запятую."
+  (if (null tokens)
+      "(empty)"
+      (format nil "~{~a~^, ~}" (mapcar #'token-compact tokens))))
+
+(defun specs-compact (specs)
+  "Сжимает эталон token в одну строку через запятую."
+  (if (null specs)
+      "(empty)"
+      (format nil "~{~a~^, ~}" (mapcar #'spec-compact specs))))
+
+(defun assert-lex (index total name input specs)
   "Сравнивает (lex input) с эталоном specs; при расхождении — error."
   (let ((tokens (lex input)))
     (unless (tokens-match-p tokens specs)
-      (let ((index (or (find-token-mismatch tokens specs)
-                       (length tokens))))
-        (print-test-fail name input specs tokens index)
-        (error "Тест ~s провален на token ~a" name index)))
-    (print-test-pass name input tokens)))
+      (let ((mismatch (or (find-token-mismatch tokens specs)
+                          (length tokens))))
+        (print-case-fail index total name input
+                         (format nil "token ~a" mismatch)
+                         (format nil "want: ~a" (specs-compact specs))
+                         (format nil "got:  ~a" (tokens-compact tokens)))
+        (error "Тест ~s провален на token ~a" name mismatch)))
+    (print-case-pass index total name input (tokens-compact tokens))))
 
 (defun run-cases (section-name cases)
   "Запускает список кейсов секции; один провал — стоп."
-  (format t "~&==== ~a (~a) ====~%" section-name (length cases))
-  (dolist (case cases)
-    (destructuring-bind (name . (input . specs)) case
-      (assert-lex name input specs))))
+  (print-section-header section-name (length cases))
+  (loop for case in cases for index from 1
+        do (destructuring-bind (name . (input . specs)) case
+             (assert-lex index (length cases) name input specs))))
 
 ;;;; ============================================================
 ;;;; МОДУЛЬ: ЛЕКСЕР — авто (циклы по types.lisp)
@@ -155,7 +198,8 @@
                      (list +token-operator+ "=")
                      (list +token-number+ 10)
                      (list +token-operator+ "+")
-                     (list +token-number+ -6))))
+                     (list +token-operator+ "-")
+                     (list +token-number+ 6))))
    (cons "decl: const double minus"
          (cons "const a = 10 - -10"
                (list (list +token-keyword+ "const")
@@ -163,7 +207,8 @@
                      (list +token-operator+ "=")
                      (list +token-number+ 10)
                      (list +token-operator+ "-")
-                     (list +token-number+ -10))))
+                     (list +token-operator+ "-")
+                     (list +token-number+ 10))))
    (cons "decl: const percent unary"
          (cons "const b = 50%-10"
                (list (list +token-keyword+ "const")
@@ -171,7 +216,51 @@
                      (list +token-operator+ "=")
                      (list +token-number+ 50)
                      (list +token-operator+ "%")
-                     (list +token-number+ -10))))))
+                     (list +token-operator+ "-")
+                     (list +token-number+ 10))))
+   (cons "minus: after name"
+         (cons "a-10"
+               (list (list +token-identifier+ "a")
+                     (list +token-operator+ "-")
+                     (list +token-number+ 10))))
+   (cons "minus: after operator"
+         (cons "a*-5"
+               (list (list +token-identifier+ "a")
+                     (list +token-operator+ "*")
+                     (list +token-operator+ "-")
+                     (list +token-number+ 5))))
+   (cons "number: float"
+         (cons "10.5"
+               (list (list +token-number+ 10.5))))
+   (cons "number: float leading dot"
+         (cons ".5"
+               (list (list +token-number+ 0.5))))
+   (cons "minus: float literal"
+         (cons "-3.5"
+               (list (list +token-operator+ "-")
+                     (list +token-number+ 3.5))))
+   (cons "string: double quotes"
+         (cons "\"hello\""
+               (list (list +token-string+ "hello"))))
+   (cons "string: single quotes"
+         (cons "'world'"
+               (list (list +token-string+ "world"))))
+   (cons "string: escape"
+         (cons "\"a\\nb\""
+               (list (list +token-string+
+                           (concatenate 'string "a" (string #\Newline) "b")))))
+   (cons "comment: line end"
+         (cons "let a = 1 // ignore"
+               (list (list +token-keyword+ "let")
+                     (list +token-identifier+ "a")
+                     (list +token-operator+ "=")
+                     (list +token-number+ 1))))
+   (cons "comment: only"
+         (cons "// nothing here"
+               '()))
+   (cons "comment: not in string"
+         (cons "\"// still string\""
+               (list (list +token-string+ "// still string"))))))
 
 (defun run-manual-lexer-tests ()
   "Запускает ручные кейсы лексера."
@@ -189,29 +278,23 @@
        (= (length (node-children a)) (length (node-children b)))
        (every #'nodes-equal-p (node-children a) (node-children b))))
 
-(defun print-parse-pass (name input)
-  "Печатает успешный результат теста парсера."
-  (format t "~&[PASS] ~a~%  input: ~s~%" name input))
-
-(defun print-parse-fail (name input expected actual)
-  "Печатает провал теста парсера перед error."
-  (format t "~&[FAIL] ~a~%  input: ~s~%  ожидание: ~s~%  получено: ~s~%"
-          name input expected actual))
-
-(defun assert-parse (name input expected)
+(defun assert-parse (index total name input expected)
   "Сравнивает (parse (lex input)) с ожидаемым узлом; при расхождении — error."
   (let ((actual (parse (lex input))))
     (unless (nodes-equal-p actual expected)
-      (print-parse-fail name input expected actual)
+      (print-case-fail index total name input
+                         (format nil "want: ~s" expected)
+                         (format nil "got:  ~s" actual))
       (error "Тест ~s провален" name))
-    (print-parse-pass name input)))
+    (print-case-pass index total name input
+                     (format nil "ast:~a" (node-construct actual)))))
 
 (defun run-parse-cases (section-name cases)
   "Запускает список кейсов парсера; один провал — стоп."
-  (format t "~&==== ~a (~a) ====~%" section-name (length cases))
-  (dolist (case cases)
-    (destructuring-bind (name input expected) case
-      (assert-parse name input expected))))
+  (print-section-header section-name (length cases))
+  (loop for case in cases for index from 1
+        do (destructuring-bind (name input expected) case
+             (assert-parse index (length cases) name input expected))))
 
 ;;;; ============================================================
 ;;;; МОДУЛЬ: ПАРСЕР — построители эталонного AST
@@ -243,6 +326,13 @@
   (make-node :construct +construct-literal-bool+
              :priority +priority-level-10+
              :value (if (string= keyword "true") :true :false)
+             :children nil))
+
+(defun n-literal-string (text)
+  "Создаёт эталонный узел literal-string с текстом text."
+  (make-node :construct +construct-literal-string+
+             :priority +priority-level-10+
+             :value text
              :children nil))
 
 (defun n-group (expr)
@@ -349,15 +439,17 @@
 ;;;; МОДУЛЬ: ПАРСЕР — параметры функции
 ;;;; ============================================================
 
-(defun assert-function-parameters-parse (name input expected)
+(defun assert-function-parameters-parse (index total name input expected)
   "Проверяет разбор списка параметров и полное потребление tokens."
   (let* ((state (js-to-lisp::make-parser-state :tokens (lex input) :pos 0))
          (actual (js-to-lisp::parse-function-parameters state)))
     (unless (and (js-to-lisp::parser-at-end-p state)
                  (nodes-equal-p actual expected))
-      (print-parse-fail name input expected actual)
+      (print-case-fail index total name input
+                       (format nil "want: ~s" expected)
+                       (format nil "got:  ~s" actual))
       (error "Тест ~s провален" name))
-    (print-parse-pass name input)))
+    (print-case-pass index total name input "ast:parameters")))
 
 (defun build-function-parameters-cases ()
   "Создаёт кейсы пустых, одиночных и нескольких параметров."
@@ -375,10 +467,11 @@
 (defun run-function-parameters-tests ()
   "Запускает тесты парсинга параметров функции."
   (let ((cases (build-function-parameters-cases)))
-    (format t "~&==== ПАРСЕР: параметры функции (~a) ====~%" (length cases))
-    (dolist (case cases)
-      (destructuring-bind (name input expected) case
-        (assert-function-parameters-parse name input expected)))))
+    (print-section-header "ПАРСЕР: параметры function" (length cases))
+    (loop for case in cases for index from 1
+          do (destructuring-bind (name input expected) case
+               (assert-function-parameters-parse index (length cases)
+                                               name input expected)))))
 
 ;;;; ============================================================
 ;;;; МОДУЛЬ: ПАРСЕР — объявления function
@@ -656,6 +749,9 @@
    (list "node: literal-bool"
          "let a = true"
          (n-program (n-let-decl "a" (n-literal-bool "true"))))
+   (list "node: literal-string"
+         "let a = \"hi\""
+         (n-program (n-let-decl "a" (n-literal-string "hi"))))
    (list "node: group"
          "let a = (x)"
          (n-program (n-let-decl "a" (n-group (n-atom "x")))))))
@@ -775,7 +871,7 @@
                                   +priority-level-6+
                                   "-"
                                   (n-literal 10)
-                                  (n-literal -10)))))
+                                  (n-unary "-" (n-literal 10))))))
    (list "precedence: left assoc subtract"
          "let r = a - b - c"
          (n-program
@@ -846,7 +942,16 @@
                                 +priority-level-6+
                                 "+"
                                 (n-literal 10)
-                                (n-literal -6)))))))
+                                (n-unary "-" (n-literal 6))))))
+   (list "complex: name minus number"
+         "let x = a-10"
+         (n-program
+          (n-let-decl "x"
+                      (n-binary +construct-binary-add+
+                                +priority-level-6+
+                                "-"
+                                (n-atom "a")
+                                (n-literal 10)))))))
 
 (defun run-parser-complex-tests ()
   "Запускает кейсы сложных фрагментов парсера."
@@ -905,47 +1010,39 @@
 ;;;; МОДУЛЬ: СЕМАНТИКА — assert ok / error
 ;;;; ============================================================
 
-(defun print-sem-pass (name input status)
-  "Печатает успешный результат теста семантики."
-  (format t "~&[PASS] ~a (~a)~%  input: ~s~%" name status input))
-
-(defun print-sem-fail (name input detail)
-  "Печатает провал теста семантики перед error."
-  (format t "~&[FAIL] ~a~%  input: ~s~%  ~a~%" name input detail))
-
-(defun assert-sem-ok (name input)
+(defun assert-sem-ok (index total name input)
   "Проверяет что check-program принимает input без ошибки."
   (check-program (parse (lex input)))
-  (print-sem-pass name input "ok"))
+  (print-case-pass index total name input "sem:ok"))
 
-(defun assert-sem-error (name input expected-part)
+(defun assert-sem-error (index total name input expected-part)
   "Проверяет что check-program падает с фрагментом expected-part в тексте."
   (handler-case
       (progn (check-program (parse (lex input)))
-             (print-sem-fail name input "ожидалась ошибка семантики")
+             (print-case-fail index total name input "ожидалась ошибка семантики")
              (error "Тест ~s провален: ошибки не было" name))
     (error (condition)
       (let ((message (format nil "~a" condition)))
         (unless (search expected-part message)
-          (print-sem-fail name input
-                          (format nil "ожидание ~s, получено ~s"
-                                  expected-part message))
+          (print-case-fail index total name input
+                           (format nil "want: ~a" expected-part)
+                           (format nil "got:  ~a" message))
           (error "Тест ~s провален: неверное сообщение" name))
-        (print-sem-pass name input "error")))))
+        (print-case-pass index total name input (shorten-display message))))))
 
 (defun run-sem-ok-cases (section-name cases)
   "Запускает список успешных кейсов семантики."
-  (format t "~&==== ~a (~a) ====~%" section-name (length cases))
-  (dolist (case cases)
-    (destructuring-bind (name input) case
-      (assert-sem-ok name input))))
+  (print-section-header section-name (length cases))
+  (loop for case in cases for index from 1
+        do (destructuring-bind (name input) case
+             (assert-sem-ok index (length cases) name input))))
 
 (defun run-sem-error-cases (section-name cases)
   "Запускает список кейсов семантики с ожидаемой ошибкой."
-  (format t "~&==== ~a (~a) ====~%" section-name (length cases))
-  (dolist (case cases)
-    (destructuring-bind (name input expected-part) case
-      (assert-sem-error name input expected-part))))
+  (print-section-header section-name (length cases))
+  (loop for case in cases for index from 1
+        do (destructuring-bind (name input expected-part) case
+             (assert-sem-error index (length cases) name input expected-part))))
 
 ;;;; ============================================================
 ;;;; МОДУЛЬ: СЕМАНТИКА — виды привязок
@@ -959,20 +1056,26 @@
    (list ":function" js-to-lisp::+sem-binding-function+ t)
    (list ":parameter" js-to-lisp::+sem-binding-parameter+ t)))
 
-(defun assert-binding-mutable (name binding-type expected)
+(defun assert-binding-mutable (index total name binding-type expected)
   "Проверяет изменяемость одного вида привязки."
   (let ((actual (js-to-lisp::binding-type-mutable-p binding-type)))
     (unless (eq actual expected)
+      (print-case-fail index total name (format nil "~s" binding-type)
+                       (format nil "want: ~s" expected)
+                       (format nil "got:  ~s" actual))
       (error "Тест привязки ~a: ожидалось ~s, получено ~s"
              name expected actual))
-    (print-sem-pass name binding-type "ok")))
+    (print-case-pass index total name (format nil "~s" binding-type)
+                     (format nil "mutable:~s" expected))))
 
 (defun run-binding-mutable-tests ()
   "Запускает проверки изменяемости видов привязок."
   (let ((cases (build-binding-mutable-cases)))
-    (format t "~&==== СЕМАНТИКА: виды привязок (~a) ====~%" (length cases))
-    (dolist (case cases)
-      (apply #'assert-binding-mutable case))))
+    (print-section-header "СЕМАНТИКА: виды привязок" (length cases))
+    (loop for case in cases for index from 1
+          do (destructuring-bind (name binding-type expected) case
+               (assert-binding-mutable index (length cases)
+                                     name binding-type expected)))))
 
 ;;;; ============================================================
 ;;;; МОДУЛЬ: СЕМАНТИКА — предварительные объявления
@@ -992,11 +1095,13 @@
           (error "Функция ~s не объявлена заранее" name))))
     (when (js-to-lisp::state-scope-lookup state "x")
       (error "Переменная x не должна объявляться на проходе функций"))
-    (print-sem-pass "функции объявлены заранее" "first, second" "ok")))
+    (print-case-pass 1 1 "функции объявлены заранее"
+                     "function first() {} function second() {}"
+                     "sem:predeclare ok")))
 
 (defun run-function-predeclaration-tests ()
   "Запускает проверку предварительных объявлений функций."
-  (format t "~&==== СЕМАНТИКА: предварительные объявления (1) ====~%")
+  (print-section-header "СЕМАНТИКА: предварительные объявления" 1)
   (assert-function-predeclaration))
 
 ;;;; ============================================================
@@ -1012,11 +1117,13 @@
     (js-to-lisp::state-control-pop state)
     (when (js-to-lisp::state-control-contains-p state +construct-function+)
       (error "Тест управляющего стека: граница не удалена"))
-    (print-sem-pass "управление: добавить найти удалить" "FUNCTION" "ok")))
+    (print-case-pass 1 1 "управление: добавить найти удалить"
+                     "FUNCTION"
+                     "sem:control-stack ok")))
 
 (defun run-control-stack-tests ()
   "Запускает проверку операций управляющего стека."
-  (format t "~&==== СЕМАНТИКА: управляющий стек (1) ====~%")
+  (print-section-header "СЕМАНТИКА: управляющий стек" 1)
   (assert-control-stack-operations))
 
 ;;;; ============================================================
@@ -1361,35 +1468,31 @@
      (transform-expression (parse-expression-tokens (lex input))
                            (make-transform-state)))))
 
-(defun print-transform-pass (name input actual)
-  "Печатает успешный результат теста трансформера."
-  (format t "~&[PASS] ~a~%  input: ~s~%  output: ~a~%" name input actual))
-
-(defun print-transform-fail (name input expected actual)
-  "Печатает провал теста трансформера перед error."
-  (format t "~&[FAIL] ~a~%  input: ~s~%  ожидание: ~a~%  получено: ~a~%"
-          name input expected actual))
-
-(defun assert-transform-expression (name input expected)
+(defun assert-transform-expression (index total name input expected)
   "Сравнивает печать результата преобразования с эталоном expected."
   (let ((actual (form->string (transform-expression-source input))))
     (unless (string= actual expected)
-      (print-transform-fail name input expected actual)
+      (print-case-fail index total name input
+                       (format nil "want: ~a" expected)
+                       (format nil "got:  ~a" actual))
       (error "Тест ~s провален" name))
-    (print-transform-pass name input actual)))
+    (print-case-pass index total name input actual)))
 
 (defun run-transform-cases (section-name cases)
   "Запускает список кейсов трансформера; один провал — стоп."
-  (format t "~&==== ~a (~a) ====~%" section-name (length cases))
-  (dolist (case cases)
-    (destructuring-bind (name input expected) case
-      (assert-transform-expression name input expected))))
+  (print-section-header section-name (length cases))
+  (loop for case in cases for index from 1
+        do (destructuring-bind (name input expected) case
+             (assert-transform-expression index (length cases)
+                                          name input expected))))
 
 (defun build-transform-leaf-cases ()
-  "Создаёт кейсы листьев: имя, число, булевы, скобки."
+  "Создаёт кейсы листьев: имя, число, булевы, строки, скобки."
   (list
    (list "leaf: atom" "x" "X")
    (list "leaf: number" "42" "42")
+   (list "leaf: float" "10.5" "10.5")
+   (list "leaf: string" "\"hello\"" "\"hello\"")
    (list "leaf: true" "true" "T")
    (list "leaf: false" "false" "NIL")
    (list "leaf: group" "(x)" "X")))
@@ -1398,6 +1501,8 @@
   "Создаёт кейсы унарных операций."
   (list
    (list "unary: minus" "-x" "(- X)")
+   (list "unary: minus number" "-5" "(- 5)")
+   (list "unary: minus float" "-3.5" "(- 3.5)")
    (list "unary: not" "!x" "(NOT X)")
    (list "unary: double" "!!x" "(NOT (NOT X))")))
 
@@ -1431,11 +1536,12 @@
       (let ((message (format nil "~a" condition)))
         (unless (search "зарезервировано" message)
           (error "Тест зарезервированного имени: неверное сообщение ~s" message))
-        (print-transform-pass "reserved: list" "list" message)))))
+        (print-case-pass 1 1 "reserved: list" "list"
+                         (shorten-display message))))))
 
 (defun run-transform-reserved-name-tests ()
   "Запускает проверку зарезервированных имён."
-  (format t "~&==== ТРАНСФОРМЕР: зарезервированные имена (1) ====~%")
+  (print-section-header "ТРАНСФОРМЕР: зарезервированные имена" 1)
   (assert-transform-reserved-name))
 
 (defun count-transform-reserved-name-cases ()
@@ -1450,17 +1556,27 @@
   "Прогоняет строку JS через js-generate в пакете выхода проверок."
   (call-in-output-package (lambda () (js-generate input))))
 
-(defun assert-generate (name input expected)
+(defun assert-generate (index total name input expected)
   "Сравнивает текст генератора с эталоном expected."
   (let ((actual (generate-source input)))
     (unless (string= actual expected)
-      (print-transform-fail name input expected actual)
+      (print-case-fail index total name input
+                       (format nil "want: ~a" (shorten-display expected))
+                       (format nil "got:  ~a" (shorten-display actual)))
       (error "Тест ~s провален" name))
-    (print-transform-pass name input actual)))
+    (print-case-pass index total name input "gen:ok")))
 
 (defun expected-header ()
   "Ожидаемая шапка файла для пакета выхода проверок."
   (format nil ";;;; Сгенерировано транслятором js-to-lisp~%(in-package :js-to-lisp-tests-output)~%~%"))
+
+(defun expected-two-forms-output ()
+  "Ожидаемый текст файла: объявление и присваивание с format для вывода."
+  (concatenate 'string
+               (expected-header)
+               "(defparameter a 1)" (string #\newline) (string #\newline)
+               "(format t " (string #\") "~s~%" (string #\")
+               " (setf a (+ a 1)))" (string #\newline)))
 
 (defun build-generate-cases ()
   "Создаёт кейсы генератора: шапка, регистр, разделение форм."
@@ -1468,17 +1584,17 @@
    (list "gen: one form" "let a = 1"
          (format nil "~a(defparameter a 1)~%" (expected-header)))
    (list "gen: two forms blank line" "let a = 1 a = a + 1"
-         (format nil "~a(defparameter a 1)~%~%(setf a (+ a 1))~%" (expected-header)))
+         (expected-two-forms-output))
    (list "gen: empty program" ""
          (format nil "~a~%" (expected-header)))))
 
 (defun run-generate-tests ()
   "Запускает проверки генератора."
   (let ((cases (build-generate-cases)))
-    (format t "~&==== ГЕНЕРАТОР (~a) ====~%" (length cases))
-    (dolist (case cases)
-      (destructuring-bind (name input expected) case
-        (assert-generate name input expected)))))
+    (print-section-header "ГЕНЕРАТОР" (length cases))
+    (loop for case in cases for index from 1
+          do (destructuring-bind (name input expected) case
+               (assert-generate index (length cases) name input expected)))))
 
 (defun count-generate-cases ()
   "Считает проверки генератора."
@@ -1488,39 +1604,164 @@
 ;;;; МОДУЛЬ: ЕДИНОЕ ЛИЦО — этапы, js-run, макрос js
 ;;;; ============================================================
 
-(defun assert-api-value (name actual expected)
+(defun assert-api-value (index total name input actual expected)
   "Сравнивает значение этапа с эталоном через equal."
   (unless (equal actual expected)
-    (print-transform-fail name "-" expected actual)
+    (print-case-fail index total name input
+                     (format nil "want: ~s" expected)
+                     (format nil "got:  ~s" actual))
     (error "Тест ~s провален" name))
-  (print-transform-pass name "-" actual))
+  (print-case-pass index total name input (format nil "~s" actual)))
 
 (js "function twice(a) { return a + a }")
 
 (defun run-api-tests ()
   "Запускает проверки единого лица библиотеки."
-  (format t "~&==== ЕДИНОЕ ЛИЦО (6) ====~%")
-  (assert-api-value "api: js-lex tokens"
+  (print-section-header "ЕДИНОЕ ЛИЦО" 6)
+  (assert-api-value 1 6 "api: js-lex tokens" "let a = 1"
                     (token-p (first (js-lex "let a = 1"))) t)
-  (assert-api-value "api: js-parse from tokens"
+  (assert-api-value 2 6 "api: js-parse from tokens" "let a = 1"
                     (node-p (js-parse (js-lex "let a = 1"))) t)
-  (assert-api-value "api: js-check returns ast"
+  (assert-api-value 3 6 "api: js-check returns ast" "let a = 1"
                     (node-construct (js-check "let a = 1")) +construct-program+)
-  (assert-api-value "api: js-run value"
+  (assert-api-value 4 6 "api: js-run value"
+                    "function add(a, b) { return a + b } add(2, 3)"
                     (call-in-output-package
                      (lambda ()
                        (js-run "function add(a, b) { return a + b } add(2, 3)")))
                     5)
-  (assert-api-value "api: js-run forms from js-transform"
+  (assert-api-value 5 6 "api: js-run forms from js-transform"
+                    "let x = 3 x = x + 4"
                     (call-in-output-package
                      (lambda () (js-run (js-transform "let x = 3 x = x + 4"))))
                     7)
-  (assert-api-value "api: macro js defines function"
+  (assert-api-value 6 6 "api: macro js defines function"
+                    "(twice 4)"
                     (twice 4) 8))
 
 (defun count-api-cases ()
   "Считает проверки единого лица."
   6)
+
+;;;; ============================================================
+;;;; МОДУЛЬ: ИНТЕГРАЦИЯ — JS → выполнение → результат
+;;;; ============================================================
+
+(defun assert-integration (index total name input expected)
+  "Сравнивает результат js-run для строки JS с эталоном expected."
+  (let ((actual (call-in-output-package (lambda () (js-run input)))))
+    (unless (equal actual expected)
+      (print-case-fail index total name input
+                       (format nil "want: ~s" expected)
+                       (format nil "got:  ~s" actual))
+      (error "Тест ~s провален" name))
+    (print-case-pass index total name input (format nil "~s" actual))))
+
+(defun assert-integration-error (index total name input expected-part)
+  "Проверяет, что js-run для строки JS падает с фрагментом expected-part."
+  (handler-case
+      (progn (call-in-output-package (lambda () (js-run input)))
+             (print-case-fail index total name input "ожидалась ошибка")
+             (error "Тест ~s провален: ошибки не было" name))
+    (error (condition)
+      (let ((message (format nil "~a" condition)))
+        (unless (search expected-part message)
+          (print-case-fail index total name input
+                           (format nil "want: ~a" expected-part)
+                           (format nil "got:  ~a" message))
+          (error "Тест ~s провален: неверное сообщение" name))
+        (print-case-pass index total name input (shorten-display message))))))
+
+(defun build-integration-cases ()
+  "Создаёт кейсы полного конвейера: строка JS → js-run → значение."
+  (list
+   (list "run: add"
+         "function add(a, b) { return a + b } add(2, 3)"
+         5)
+   (list "run: unary minus"
+         "function neg(x) { return -x } neg(7)"
+         -7)
+   (list "run: subtract chain"
+         "function sub3(a, b, c) { return a - b - c } sub3(10, 3, 2)"
+         5)
+   (list "run: float"
+         "function dbl(n) { return n * 2.5 } dbl(4)"
+         10.0)
+   (list "run: unary minus float"
+         "function f() { return -3.5 } f()"
+         -3.5)
+   (list "run: string"
+         "function greet() { return \"hi\" } greet()"
+         "hi")
+   (list "run: bool true"
+         "function yes() { return true } yes()"
+         t)
+   (list "run: bool false"
+         "function no() { return false } no()"
+         nil)
+   (list "run: name minus number"
+         "function gap(a) { return a-10 } gap(25)"
+         15)
+   (list "run: comment in block"
+         (concatenate 'string
+                      "function f() { return 2 + 3 // sum"
+                      (string #\Newline)
+                      " } f()")
+         5)
+   (list "run: comment before code"
+         (concatenate 'string
+                      "// header comment"
+                      (string #\Newline)
+                      "function f() { return 42 } f()")
+         42)
+   (list "run: while sum"
+         "function sum(n) { let s = 0 let i = 1 while (i <= n) { s = s + i i = i + 1 } return s } sum(5)"
+         15)
+   (list "run: for factorial"
+         "function fact(n) { let r = 1 for (let i = 1; i <= n; i = i + 1) { r = r * i } return r } fact(5)"
+         120)
+   (list "run: compare"
+         "function same(a, b) { return a === b } same(3, 3)"
+         t)
+   (list "run: logic and"
+         "function both(a, b) { return a && b } both(true, false)"
+         nil)
+   (list "run: if else then"
+         "function max2(a, b) { if (a > b) { return a } else { return b } } max2(10, 3)"
+         10)
+   (list "run: if else else-branch"
+         "function max2(a, b) { if (a > b) { return a } else { return b } } max2(2, 9)"
+         9)
+   (list "run: if without else"
+         "function abs0(n) { if (n < 0) { return -n } return n } abs0(-4)"
+         4)))
+
+(defun build-integration-error-cases ()
+  "Создаёт кейсы: полный конвейер должен упасть на семантике."
+  (list
+   (list "run: const reassignment"
+         "function bad() { const a = 1 a = 2 return a } bad()"
+         "const \"a\" нельзя изменять")))
+
+(defun run-integration-tests ()
+  "Запускает интеграционные проверки полного конвейера."
+  (let ((ok-cases (build-integration-cases))
+        (error-cases (build-integration-error-cases)))
+    (print-section-header "ИНТЕГРАЦИЯ: выполнение" (length ok-cases))
+    (loop for case in ok-cases for index from 1
+          do (destructuring-bind (name input expected) case
+               (assert-integration index (length ok-cases)
+                                   name input expected)))
+    (print-section-header "ИНТЕГРАЦИЯ: ошибки" (length error-cases))
+    (loop for case in error-cases for index from 1
+          do (destructuring-bind (name input expected-part) case
+               (assert-integration-error index (length error-cases)
+                                         name input expected-part)))))
+
+(defun count-integration-cases ()
+  "Считает интеграционные проверки."
+  (+ (length (build-integration-cases))
+     (length (build-integration-error-cases))))
 
 (defun run-transform-expression-tests ()
   "Запускает все проверки преобразования выражений."
@@ -1551,20 +1792,23 @@
      (transform-statement (first-statement-from-source input)
                           (make-transform-state)))))
 
-(defun assert-transform-statement (name input expected)
+(defun assert-transform-statement (index total name input expected)
   "Сравнивает печать преобразованной инструкции с эталоном expected."
   (let ((actual (form->string (transform-statement-source input))))
     (unless (string= actual expected)
-      (print-transform-fail name input expected actual)
+      (print-case-fail index total name input
+                       (format nil "want: ~a" expected)
+                       (format nil "got:  ~a" actual))
       (error "Тест ~s провален" name))
-    (print-transform-pass name input actual)))
+    (print-case-pass index total name input actual)))
 
 (defun run-transform-statement-cases (section-name cases)
   "Запускает список кейсов инструкций трансформера; один провал — стоп."
-  (format t "~&==== ~a (~a) ====~%" section-name (length cases))
-  (dolist (case cases)
-    (destructuring-bind (name input expected) case
-      (assert-transform-statement name input expected))))
+  (print-section-header section-name (length cases))
+  (loop for case in cases for index from 1
+        do (destructuring-bind (name input expected) case
+             (assert-transform-statement index (length cases)
+                                         name input expected))))
 
 (defun build-transform-assignment-cases ()
   "Создаёт кейсы присваивания и вызова как инструкции."
@@ -1650,13 +1894,15 @@
   (call-in-output-package
    (lambda () (transform-program (parse (lex input))))))
 
-(defun assert-transform-program (name input expected)
+(defun assert-transform-program (index total name input expected)
   "Сравнивает печать всех форм программы с эталоном expected."
   (let ((actual (forms->string (transform-program-source input))))
     (unless (string= actual expected)
-      (print-transform-fail name input expected actual)
+      (print-case-fail index total name input
+                       (format nil "want: ~a" expected)
+                       (format nil "got:  ~a" actual))
       (error "Тест ~s провален" name))
-    (print-transform-pass name input actual)))
+    (print-case-pass index total name input actual)))
 
 (defun build-transform-program-cases ()
   "Создаёт кейсы верхнего уровня программы."
@@ -1675,10 +1921,11 @@
 (defun run-transform-program-tests ()
   "Запускает проверки верхнего уровня программы."
   (let ((cases (build-transform-program-cases)))
-    (format t "~&==== ТРАНСФОРМЕР: программа (~a) ====~%" (length cases))
-    (dolist (case cases)
-      (destructuring-bind (name input expected) case
-        (assert-transform-program name input expected)))))
+    (print-section-header "ТРАНСФОРМЕР: программа" (length cases))
+    (loop for case in cases for index from 1
+          do (destructuring-bind (name input expected) case
+               (assert-transform-program index (length cases)
+                                         name input expected)))))
 
 (defun count-transform-program-cases ()
   "Считает проверки верхнего уровня программы."
@@ -1813,7 +2060,8 @@
                   (count-transform-program-cases)
                   (count-transform-reserved-name-cases)
                   (count-generate-cases)
-                  (count-api-cases))))
+                  (count-api-cases)
+                  (count-integration-cases))))
     (run-generated-lexer-tests)
     (run-manual-lexer-tests)
     (run-function-parameters-tests)
@@ -1836,6 +2084,7 @@
     (run-transform-reserved-name-tests)
     (run-generate-tests)
     (run-api-tests)
+    (run-integration-tests)
     (format t "~&==== ИТОГ ====~%OK: ~a tests~%" total)))
 
 (run-all-tests)
