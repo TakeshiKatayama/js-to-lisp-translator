@@ -1,19 +1,16 @@
 ;;;; main.lisp — точка входа
 ;;;; Запуск: sbcl --load main.lisp --quit
+;;;; Показывает все этапы для test.js и пишет test.lisp рядом.
 
 (load (merge-pathnames "types.lisp" *load-pathname*))
 (load (merge-pathnames "lexer.lisp" *load-pathname*))
 (load (merge-pathnames "parser.lisp" *load-pathname*))
 (load (merge-pathnames "semantics.lisp" *load-pathname*))
+(load (merge-pathnames "transformer.lisp" *load-pathname*))
+(load (merge-pathnames "generator.lisp" *load-pathname*))
+(load (merge-pathnames "api.lisp" *load-pathname*))
 
 (in-package :js-to-lisp)
-
-(defun read-file-string (path)
-  "Читает файл path целиком в строку."
-  (with-open-file (stream path :direction :input)
-    (let ((buffer (make-string (file-length stream))))
-      (read-sequence buffer stream)
-      buffer)))
 
 (defun print-node-line (node indent)
   "Печатает одну строку узла AST с отступом indent."
@@ -29,14 +26,12 @@
   (dolist (child (node-children node))
     (print-node child (+ indent 2))))
 
-(defun translate-file (path)
-  "Читает JS-файл path: lex → parse → check-program."
-  (check-program (parse (lex (read-file-string path)))))
-
 (defun main (path)
-  "Транслирует JS-файл path: lex → parse → semantics → печать AST."
-  (print-node (translate-file path))
-  (format t "~%Semantics: OK~%")
-  (terpri))
+  "Показывает этапы для JS-файла path: AST → семантика → текст .lisp → файл."
+  (let ((source (read-file-string path)))
+    (print-node (js-check source))
+    (format t "~%Semantics: OK~%")
+    (format t "~%Generator:~%~a" (js-generate source))
+    (format t "~%Записано: ~a~%" (js-translate-file path))))
 
 (main (merge-pathnames "test.js" *load-pathname*))

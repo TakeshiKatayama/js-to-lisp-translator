@@ -62,8 +62,11 @@
    #:+construct-let-decl+
    #:+construct-const-decl+
    #:+construct-if+
+   #:+construct-while+
+   #:+construct-for+
    #:+construct-block+
    #:+construct-function+
+   #:+construct-parameters+
    #:+construct-return+
    #:+constructs-level-2+
    ;; --- уровень 3 ---
@@ -95,7 +98,30 @@
    #:+construct-group+
    #:+constructs-level-10+
    #:parse
-   #:check-program))
+   #:parse-expression-tokens
+   #:check-program
+   ;; --- трансформер ---
+   #:transform-state
+   #:make-transform-state
+   #:js-name->symbol
+   #:transform-expression
+   #:transform-statement
+   #:transform-program
+   ;; --- генератор ---
+   #:generate-form
+   #:generate-program
+   #:write-text-file
+   ;; --- единое лицо библиотеки ---
+   #:read-file-string
+   #:js-lex
+   #:js-parse
+   #:js-check
+   #:js-transform
+   #:js-generate
+   #:js-run
+   #:js
+   #:js-load-file
+   #:js-translate-file))
 
 (in-package :js-to-lisp)
 
@@ -151,6 +177,8 @@
         "const"
         "if"
         "else"
+        "while"
+        "for"
         "function"
         "return"
         "true"
@@ -163,7 +191,7 @@
   "Операторы JS. Длинные строки — первыми в списке.")
 
 (defconstant +js-punct-chars+
-  '(#\; #\{ #\} #\( #\) #\[ #\])
+  '(#\; #\, #\{ #\} #\( #\) #\[ #\])
   "Символы пунктуации JS — один символ на token.")
 
 ;;;; Приоритеты AST (README, таблица 1–10). Совпадают с node-priority.
@@ -227,11 +255,20 @@
 (defconstant +construct-if+ :if
   "Условие if / else. Дети — условие, ветка then, ветка else.")
 
+(defconstant +construct-while+ :while
+  "Цикл while. Дети — условие и тело (блок).")
+
+(defconstant +construct-for+ :for
+  "Цикл for. Дети — начало, условие, шаг и тело (блок).")
+
 (defconstant +construct-block+ :block
   "Блок { ... }. Дети — список инструкций.")
 
 (defconstant +construct-function+ :function
-  "Объявление function. Дети — имя, параметры, тело (блок).")
+  "Объявление function. Дети — имя, узел parameters и тело (блок).")
+
+(defconstant +construct-parameters+ :parameters
+  "Параметры функции. Дети — atom-узлы с именами параметров.")
 
 (defconstant +construct-return+ :return
   "return. Дети — выражение для возврата (может быть nil).")
@@ -298,8 +335,11 @@
   (list +construct-let-decl+
         +construct-const-decl+
         +construct-if+
+        +construct-while+
+        +construct-for+
         +construct-block+
         +construct-function+
+        +construct-parameters+
         +construct-return+)
   "Уровень 2 — инструкции и блоки (фаза 1).")
 

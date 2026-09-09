@@ -1,11 +1,10 @@
-const a = -10
-let b =-10 + a
-a = 15 + a
-b = a + b
-if (true) {
-  let c = 10
-  a = a + b
-  b = b + a
-  c = a + b + c
+let a = 10
+let b = 10
+
+function add(a, b) {
+  if (a > 0 && b > 0) {
+    return a+b
+  }
 }
-b =a + b + c
+
+add(a, b)

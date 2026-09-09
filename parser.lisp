@@ -141,6 +141,35 @@
        (parser-fail state "ожидался atom, literal или (")))))
 
 ;;;; ============================================================
+;;;; МОДУЛЬ: ВЫРАЖЕНИЯ — уровень 9 (call)
+;;;; ============================================================
+
+(defun parse-call-arguments (state)
+  "Парсит аргументы вызова между ( и )."
+  (parser-expect state +token-punct+ #\( "открывающая ( аргументов")
+  (loop with arguments = '()
+        until (token-punct-is (parser-current-token state) #\))
+        do (push (parse-expression state) arguments)
+           (cond
+             ((token-punct-is (parser-current-token state) #\,)
+              (parser-advance state))
+             ((not (token-punct-is (parser-current-token state) #\)))
+              (parser-fail state "ожидалась запятая или закрывающая )")))
+        finally
+           (parser-expect state +token-punct+ #\) "закрывающая ) аргументов")
+           (return (nreverse arguments))))
+
+(defun parse-call (state)
+  "Парсит primary и следующие за ним вызовы функции."
+  (loop with callee = (parse-primary state)
+        while (token-punct-is (parser-current-token state) #\()
+        do (setf callee
+                 (ast-node +construct-call+ +priority-level-9+
+                           :children (cons callee
+                                           (parse-call-arguments state))))
+        finally (return callee)))
+
+;;;; ============================================================
 ;;;; МОДУЛЬ: ВЫРАЖЕНИЯ — уровень 8 (unary)
 ;;;; ============================================================
 
@@ -150,7 +179,7 @@
       (token-operator-is token "-")))
 
 (defun parse-unary (state)
-  "Парсит унарный ! или -, иначе делегирует primary."
+  "Парсит унарный ! или -, иначе делегирует call."
   (let ((token (parser-current-token state)))
     (if (unary-operator-p token)
         (let ((op (token-value token)))
@@ -158,7 +187,7 @@
           (ast-node +construct-unary+ +priority-level-8+
                     :value op
                     :children (list (parse-unary state))))
-        (parse-primary state))))
+        (parse-call state))))
 
 ;;;; ============================================================
 ;;;; МОДУЛЬ: ВЫРАЖЕНИЯ — бинарные уровни 7, 6, 5, 4
@@ -215,6 +244,30 @@
 ;;;; МОДУЛЬ: ИНСТРУКЦИИ — уровень 2
 ;;;; ============================================================
 
+(defun parse-function-parameter (state)
+  "Читает имя одного параметра и возвращает atom node."
+  (let ((token (parser-current-token state)))
+    (unless (token-type-is token +token-identifier+)
+      (parser-fail state "ожидалось имя параметра функции"))
+    (parser-advance state)
+    (make-atom-node (token-value token))))
+
+(defun parse-function-parameters (state)
+  "Парсит список параметров функции между ( и )."
+  (parser-expect state +token-punct+ #\( "открывающая ( параметров")
+  (loop with parameters = '()
+        until (token-punct-is (parser-current-token state) #\))
+        do (push (parse-function-parameter state) parameters)
+           (cond
+             ((token-punct-is (parser-current-token state) #\,)
+              (parser-advance state))
+             ((not (token-punct-is (parser-current-token state) #\)))
+              (parser-fail state "ожидалась запятая или закрывающая )")))
+        finally
+           (parser-expect state +token-punct+ #\) "закрывающая ) параметров")
+           (return (ast-node +construct-parameters+ +priority-level-2+
+                             :children (nreverse parameters)))))
+
 (defun parse-const-decl (state)
   "Парсит const name = expr."
   (parser-expect state +token-keyword+ "const" "const")
@@ -265,6 +318,43 @@
                  (return (ast-node +construct-block+ +priority-level-2+
                                    :children (nreverse body)))))
 
+(defun parse-function (state)
+  "Парсит объявление function с именем, параметрами и телом."
+  (parser-expect state +token-keyword+ "function" "function")
+  (let ((name-token (parser-current-token state)))
+    (unless (token-type-is name-token +token-identifier+)
+      (parser-fail state "ожидалось имя функции"))
+    (parser-advance state)
+    (let ((parameters (parse-function-parameters state))
+          (body (parse-block state)))
+      (ast-node +construct-function+ +priority-level-2+
+                :children (list (make-atom-node (token-value name-token))
+                                parameters
+                                body)))))
+
+(defun return-expression-follows-p (state)
+  "Проверяет, следует ли после return выражение."
+  (and (not (parser-at-end-p state))
+       (not (token-punct-is (parser-current-token state) #\;))
+       (not (token-punct-is (parser-current-token state) #\}))))
+
+(defun parse-return (state)
+  "Парсит return с необязательным выражением."
+  (parser-expect state +token-keyword+ "return" "return")
+  (let ((children (when (return-expression-follows-p state)
+                    (list (parse-expression state)))))
+    (when (token-punct-is (parser-current-token state) #\;)
+      (parser-advance state))
+    (ast-node +construct-return+ +priority-level-2+
+              :children children)))
+
+(defun parse-call-statement (state)
+  "Парсит вызов функции как отдельную инструкцию."
+  (let ((call (parse-call state)))
+    (when (token-punct-is (parser-current-token state) #\;)
+      (parser-advance state))
+    call))
+
 (defun parse-if (state)
   "Парсит if (cond) block else block."
   (parser-expect state +token-keyword+ "if" "if")
@@ -280,6 +370,50 @@
           (ast-node +construct-if+ +priority-level-2+
                     :children (list cond then-branch))))))
 
+(defun parse-while (state)
+  "Разбирает цикл while с условием и телом."
+  (parser-expect state +token-keyword+ "while" "while")
+  (parser-expect state +token-punct+ #\( "открывающая (")
+  (let ((condition (parse-expression state)))
+    (parser-expect state +token-punct+ #\) "закрывающая )")
+    (ast-node +construct-while+ +priority-level-2+
+              :children (list condition (parse-block state)))))
+
+(defun parse-for-initialization (state)
+  "Разбирает обязательную начальную часть цикла for."
+  (let ((token (parser-current-token state)))
+    (cond
+      ((token-keyword-is token "let")
+       (parse-let-decl state))
+      ((token-keyword-is token "const")
+       (parse-const-decl state))
+      ((token-type-is token +token-identifier+)
+       (parse-assignment state))
+      (t
+       (parser-fail state "ожидалась начальная часть for")))))
+
+(defun parse-for-step (state)
+  "Разбирает обязательное присваивание в шаге цикла for."
+  (if (token-type-is (parser-current-token state) +token-identifier+)
+      (parse-assignment state)
+      (parser-fail state "ожидался шаг for в виде присваивания")))
+
+(defun parse-for (state)
+  "Разбирает цикл for из начала, условия, шага и тела."
+  (parser-expect state +token-keyword+ "for" "for")
+  (parser-expect state +token-punct+ #\( "открывающая (")
+  (let ((initialization (parse-for-initialization state)))
+    (parser-expect state +token-punct+ #\; "первая ;")
+    (let ((condition (parse-expression state)))
+      (parser-expect state +token-punct+ #\; "вторая ;")
+      (let ((step (parse-for-step state)))
+        (parser-expect state +token-punct+ #\) "закрывающая )")
+        (ast-node +construct-for+ +priority-level-2+
+                  :children (list initialization
+                                  condition
+                                  step
+                                  (parse-block state)))))))
+
 (defun parse-statement (state)
   "Dispatch инструкции по первому token."
   (let ((token (parser-current-token state)))
@@ -290,6 +424,19 @@
        (parse-let-decl state))
       ((token-keyword-is token "if")
        (parse-if state))
+      ((token-keyword-is token "while")
+       (parse-while state))
+      ((token-keyword-is token "for")
+       (parse-for state))
+      ((token-keyword-is token "function")
+       (parse-function state))
+      ((token-keyword-is token "return")
+       (parse-return state))
+      ((token-punct-is token #\{)
+       (parse-block state))
+      ((and (token-type-is token +token-identifier+)
+            (token-punct-is (parser-peek-token state) #\())
+       (parse-call-statement state))
       ((token-type-is token +token-identifier+)
        (parse-assignment state))
       (t
@@ -310,3 +457,11 @@
 (defun parse (tokens)
   "Преобразует список token в узел program."
   (parse-program (make-parser-state :tokens tokens :pos 0)))
+
+(defun parse-expression-tokens (tokens)
+  "Преобразует список token в узел одного выражения; лишние token — ошибка."
+  (let ((state (make-parser-state :tokens tokens :pos 0)))
+    (let ((expr (parse-expression state)))
+      (unless (parser-at-end-p state)
+        (parser-fail state "лишние token после выражения"))
+      expr)))

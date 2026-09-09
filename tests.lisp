@@ -7,6 +7,9 @@
 (load (merge-pathnames "lexer.lisp" *load-pathname*))
 (load (merge-pathnames "parser.lisp" *load-pathname*))
 (load (merge-pathnames "semantics.lisp" *load-pathname*))
+(load (merge-pathnames "transformer.lisp" *load-pathname*))
+(load (merge-pathnames "generator.lisp" *load-pathname*))
+(load (merge-pathnames "api.lisp" *load-pathname*))
 
 (defpackage :js-to-lisp-tests
   (:use :cl :js-to-lisp))
@@ -249,6 +252,13 @@
              :value nil
              :children (list expr)))
 
+(defun n-call (callee &rest arguments)
+  "Создаёт эталонный узел вызова функции."
+  (make-node :construct +construct-call+
+             :priority +priority-level-9+
+             :value nil
+             :children (cons callee arguments)))
+
 (defun n-unary (operator operand)
   "Создаёт эталонный узел unary с оператором и операндом."
   (make-node :construct +construct-unary+
@@ -291,6 +301,27 @@
              :value nil
              :children statements))
 
+(defun n-parameters (&rest names)
+  "Создаёт эталонный узел parameters из имён параметров."
+  (make-node :construct +construct-parameters+
+             :priority +priority-level-2+
+             :value nil
+             :children (mapcar #'n-atom names)))
+
+(defun n-function (name parameters body)
+  "Создаёт эталонный узел объявления function."
+  (make-node :construct +construct-function+
+             :priority +priority-level-2+
+             :value nil
+             :children (list (n-atom name) parameters body)))
+
+(defun n-return (&optional expression)
+  "Создаёт эталонный узел return с необязательным выражением."
+  (make-node :construct +construct-return+
+             :priority +priority-level-2+
+             :value nil
+             :children (when expression (list expression))))
+
 (defun n-if (condition then-branch &optional else-branch)
   "Создаёт эталонный узел if с ветками then и опционально else."
   (make-node :construct +construct-if+
@@ -299,6 +330,253 @@
              :children (if else-branch
                           (list condition then-branch else-branch)
                           (list condition then-branch))))
+
+(defun n-while (condition body)
+  "Создаёт эталонный узел цикла while."
+  (make-node :construct +construct-while+
+             :priority +priority-level-2+
+             :value nil
+             :children (list condition body)))
+
+(defun n-for (initialization condition step body)
+  "Создаёт эталонный узел цикла for."
+  (make-node :construct +construct-for+
+             :priority +priority-level-2+
+             :value nil
+             :children (list initialization condition step body)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: ПАРСЕР — параметры функции
+;;;; ============================================================
+
+(defun assert-function-parameters-parse (name input expected)
+  "Проверяет разбор списка параметров и полное потребление tokens."
+  (let* ((state (js-to-lisp::make-parser-state :tokens (lex input) :pos 0))
+         (actual (js-to-lisp::parse-function-parameters state)))
+    (unless (and (js-to-lisp::parser-at-end-p state)
+                 (nodes-equal-p actual expected))
+      (print-parse-fail name input expected actual)
+      (error "Тест ~s провален" name))
+    (print-parse-pass name input)))
+
+(defun build-function-parameters-cases ()
+  "Создаёт кейсы пустых, одиночных и нескольких параметров."
+  (list
+   (list "function params: empty"
+         "()"
+         (n-parameters))
+   (list "function params: one"
+         "(a)"
+         (n-parameters "a"))
+   (list "function params: trailing comma"
+         "(a, b,)"
+         (n-parameters "a" "b"))))
+
+(defun run-function-parameters-tests ()
+  "Запускает тесты парсинга параметров функции."
+  (let ((cases (build-function-parameters-cases)))
+    (format t "~&==== ПАРСЕР: параметры функции (~a) ====~%" (length cases))
+    (dolist (case cases)
+      (destructuring-bind (name input expected) case
+        (assert-function-parameters-parse name input expected)))))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: ПАРСЕР — объявления function
+;;;; ============================================================
+
+(defun build-function-cases ()
+  "Создаёт кейсы объявлений function."
+  (list
+   (list "function: empty"
+         "function run() {}"
+         (n-program
+          (n-function "run" (n-parameters) (n-block))))
+   (list "function: one parameter"
+         "function change(a) {}"
+         (n-program
+          (n-function "change" (n-parameters "a") (n-block))))
+   (list "function: trailing comma"
+         "function add(a, b,) {}"
+         (n-program
+          (n-function "add" (n-parameters "a" "b") (n-block))))
+   (list "function: assignment body"
+         "function change(a) { a = 10 }"
+         (n-program
+          (n-function "change"
+                      (n-parameters "a")
+                      (n-block (n-assignment "a" (n-literal 10))))))))
+
+(defun run-function-tests ()
+  "Запускает тесты объявлений function."
+  (run-parse-cases "ПАРСЕР: объявления function"
+                   (build-function-cases)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: ПАРСЕР — return
+;;;; ============================================================
+
+(defun build-return-cases ()
+  "Создаёт кейсы return без выражения и с выражением."
+  (list
+   (list "return: end of program"
+         "return"
+         (n-program (n-return)))
+   (list "return: semicolon"
+         "return;"
+         (n-program (n-return)))
+   (list "return: before block end"
+         "function f() { return }"
+         (n-program
+          (n-function "f"
+                      (n-parameters)
+                      (n-block (n-return)))))
+   (list "return: literal"
+         "function f() { return 10 }"
+         (n-program
+          (n-function "f"
+                      (n-parameters)
+                      (n-block (n-return (n-literal 10))))))
+   (list "return: expression"
+         "function add(a, b) { return a + b; }"
+         (n-program
+          (n-function
+           "add"
+           (n-parameters "a" "b")
+           (n-block
+            (n-return
+             (n-binary +construct-binary-add+
+                       +priority-level-6+
+                       "+"
+                       (n-atom "a")
+                       (n-atom "b")))))))))
+
+(defun run-return-tests ()
+  "Запускает тесты инструкции return."
+  (run-parse-cases "ПАРСЕР: return"
+                   (build-return-cases)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: ПАРСЕР — вызовы функции
+;;;; ============================================================
+
+(defun build-call-cases ()
+  "Создаёт кейсы вызова функции в инструкциях и выражениях."
+  (list
+   (list "call: no arguments"
+         "run()"
+         (n-program (n-call (n-atom "run"))))
+   (list "call: statement arguments"
+         "add(a, b)"
+         (n-program
+          (n-call (n-atom "add") (n-atom "a") (n-atom "b"))))
+   (list "call: trailing comma"
+         "add(1, 2,)"
+         (n-program
+          (n-call (n-atom "add") (n-literal 1) (n-literal 2))))
+   (list "call: declaration initializer"
+         "let result = add(1, 2)"
+         (n-program
+          (n-let-decl
+           "result"
+           (n-call (n-atom "add") (n-literal 1) (n-literal 2)))))
+   (list "call: return expression"
+         "function f() { return get() }"
+         (n-program
+          (n-function
+           "f"
+           (n-parameters)
+           (n-block (n-return (n-call (n-atom "get")))))))
+   (list "call: unary precedence"
+         "let result = -get()"
+         (n-program
+          (n-let-decl
+           "result"
+           (n-unary "-" (n-call (n-atom "get"))))))))
+
+(defun run-call-tests ()
+  "Запускает тесты вызовов функции."
+  (run-parse-cases "ПАРСЕР: вызовы function"
+                   (build-call-cases)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: ПАРСЕР — while
+;;;; ============================================================
+
+(defun build-while-cases ()
+  "Создаёт проверки разбора циклов while."
+  (list
+   (list "while: empty body"
+         "while (true) {}"
+         (n-program
+          (n-while (n-literal-bool "true") (n-block))))
+   (list "while: comparison"
+         "while (a < 10) { a = a + 1 }"
+         (n-program
+          (n-while
+           (n-binary +construct-binary-compare+
+                     +priority-level-5+
+                     "<"
+                     (n-atom "a")
+                     (n-literal 10))
+           (n-block
+            (n-assignment
+             "a"
+             (n-binary +construct-binary-add+
+                       +priority-level-6+
+                       "+"
+                       (n-atom "a")
+                       (n-literal 1)))))))))
+
+(defun run-while-tests ()
+  "Запускает проверки разбора циклов while."
+  (run-parse-cases "ПАРСЕР: while"
+                   (build-while-cases)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: ПАРСЕР — for
+;;;; ============================================================
+
+(defun expected-for-condition ()
+  "Создаёт эталонное условие i < 3."
+  (n-binary +construct-binary-compare+
+            +priority-level-5+
+            "<"
+            (n-atom "i")
+            (n-literal 3)))
+
+(defun expected-for-step ()
+  "Создаёт эталонный шаг i = i + 1."
+  (n-assignment
+   "i"
+   (n-binary +construct-binary-add+
+             +priority-level-6+
+             "+"
+             (n-atom "i")
+             (n-literal 1))))
+
+(defun build-for-cases ()
+  "Создаёт проверки разбора ограниченного цикла for."
+  (list
+   (list "for: let initialization"
+         "for (let i = 0; i < 3; i = i + 1) {}"
+         (n-program
+          (n-for (n-let-decl "i" (n-literal 0))
+                 (expected-for-condition)
+                 (expected-for-step)
+                 (n-block))))
+   (list "for: assignment initialization"
+         "for (i = 0; i < 3; i = i + 1) { i = i + 1 }"
+         (n-program
+          (n-for
+           (n-assignment "i" (n-literal 0))
+           (expected-for-condition)
+           (expected-for-step)
+           (n-block (expected-for-step)))))))
+
+(defun run-for-tests ()
+  "Запускает проверки разбора ограниченного цикла for."
+  (run-parse-cases "ПАРСЕР: for"
+                   (build-for-cases)))
 
 ;;;; ============================================================
 ;;;; МОДУЛЬ: ПАРСЕР — 1. типы узлов
@@ -580,8 +858,12 @@
 ;;;; ============================================================
 
 (defun build-parser-edge-cases ()
-  "Создаёт пограничные кейсы: цепочки операторов одного уровня."
+  "Создаёт пограничные кейсы: цепочки операторов одного уровня, голый блок."
   (list
+   (list "edge: bare block"
+         "{ a = 1 }"
+         (n-program
+          (n-block (n-assignment "a" (n-literal 1)))))
    (list "edge: logic chain"
          "let a = x && y || z"
          (n-program
@@ -664,6 +946,189 @@
   (dolist (case cases)
     (destructuring-bind (name input expected-part) case
       (assert-sem-error name input expected-part))))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — виды привязок
+;;;; ============================================================
+
+(defun build-binding-mutable-cases ()
+  "Создаёт проверки изменяемости видов привязок."
+  (list
+   (list ":let" js-to-lisp::+sem-binding-let+ t)
+   (list ":const" js-to-lisp::+sem-binding-const+ nil)
+   (list ":function" js-to-lisp::+sem-binding-function+ t)
+   (list ":parameter" js-to-lisp::+sem-binding-parameter+ t)))
+
+(defun assert-binding-mutable (name binding-type expected)
+  "Проверяет изменяемость одного вида привязки."
+  (let ((actual (js-to-lisp::binding-type-mutable-p binding-type)))
+    (unless (eq actual expected)
+      (error "Тест привязки ~a: ожидалось ~s, получено ~s"
+             name expected actual))
+    (print-sem-pass name binding-type "ok")))
+
+(defun run-binding-mutable-tests ()
+  "Запускает проверки изменяемости видов привязок."
+  (let ((cases (build-binding-mutable-cases)))
+    (format t "~&==== СЕМАНТИКА: виды привязок (~a) ====~%" (length cases))
+    (dolist (case cases)
+      (apply #'assert-binding-mutable case))))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — предварительные объявления
+;;;; ============================================================
+
+(defun assert-function-predeclaration ()
+  "Проверяет предварительное объявление только имён функций."
+  (let* ((tree (parse (lex
+                       "function first() {} let x = 1 function second() {}")))
+         (state (js-to-lisp::make-semantic-state)))
+    (js-to-lisp::predeclare-functions (node-children tree) state)
+    (dolist (name '("first" "second"))
+      (let ((binding (js-to-lisp::state-scope-lookup state name)))
+        (unless (and binding
+                     (eq (js-to-lisp::binding-type-of binding)
+                         js-to-lisp::+sem-binding-function+))
+          (error "Функция ~s не объявлена заранее" name))))
+    (when (js-to-lisp::state-scope-lookup state "x")
+      (error "Переменная x не должна объявляться на проходе функций"))
+    (print-sem-pass "функции объявлены заранее" "first, second" "ok")))
+
+(defun run-function-predeclaration-tests ()
+  "Запускает проверку предварительных объявлений функций."
+  (format t "~&==== СЕМАНТИКА: предварительные объявления (1) ====~%")
+  (assert-function-predeclaration))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — управляющий стек
+;;;; ============================================================
+
+(defun assert-control-stack-operations ()
+  "Проверяет добавление, поиск и удаление управляющей границы."
+  (let ((state (js-to-lisp::make-semantic-state)))
+    (js-to-lisp::state-control-push state +construct-function+)
+    (unless (js-to-lisp::state-control-contains-p state +construct-function+)
+      (error "Тест управляющего стека: граница не найдена"))
+    (js-to-lisp::state-control-pop state)
+    (when (js-to-lisp::state-control-contains-p state +construct-function+)
+      (error "Тест управляющего стека: граница не удалена"))
+    (print-sem-pass "управление: добавить найти удалить" "FUNCTION" "ok")))
+
+(defun run-control-stack-tests ()
+  "Запускает проверку операций управляющего стека."
+  (format t "~&==== СЕМАНТИКА: управляющий стек (1) ====~%")
+  (assert-control-stack-operations))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — функции
+;;;; ============================================================
+
+(defun build-sem-function-ok-cases ()
+  "Создаёт успешные проверки функций, параметров и return."
+  (list
+   (list "function: empty" "function f() {}")
+   (list "function: parameter assignment" "function f(a) { a = 1 }")
+   (list "function: return expression"
+         "function add(a, b) { return a + b }")
+   (list "function: hoisting" "f() function f() {}")
+   (list "function: recursion" "function f() { return f() }")
+   (list "function: nested hoisting"
+         "function outer() { inner() function inner() {} }")
+   (list "function: earlier outer name"
+         "let x = 1 function f() { return x }")))
+
+(defun build-sem-function-error-cases ()
+  "Создаёт ошибочные проверки функций, параметров и return."
+  (list
+   (list "function: return outside"
+         "return 1"
+         "return разрешён только внутри функции")
+   (list "function: duplicate parameter"
+         "function f(a, a) {}"
+         "повторное объявление")
+   (list "function: local outside"
+         "function f() { let x = 1 } let y = x"
+         "необъявленное имя")
+   (list "function: missing name in body"
+         "function f() { return missing }"
+         "необъявленное имя")
+   (list "function: missing call"
+         "missing()"
+         "необъявленное имя")
+   (list "function: conflicts with let"
+         "let f = 1 function f() {}"
+         "повторное объявление")))
+
+(defun run-sem-function-tests ()
+  "Запускает успешные и ошибочные проверки функций."
+  (run-sem-ok-cases "СЕМАНТИКА: функции ok"
+                    (build-sem-function-ok-cases))
+  (run-sem-error-cases "СЕМАНТИКА: функции error"
+                       (build-sem-function-error-cases)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — while
+;;;; ============================================================
+
+(defun build-sem-while-ok-cases ()
+  "Создаёт успешные проверки циклов while."
+  (list
+   (list "while: empty" "while (true) {}")
+   (list "while: outer assignment"
+         "let a = 0 while (a < 3) { a = a + 1 }")
+   (list "while: return in function"
+         "function f(a) { while (a > 0) { return a } }")))
+
+(defun build-sem-while-error-cases ()
+  "Создаёт ошибочные проверки циклов while."
+  (list
+   (list "while: missing condition name"
+         "while (missing) {}"
+         "необъявленное имя")
+   (list "while: local outside"
+         "while (true) { let x = 1 } let y = x"
+         "необъявленное имя")))
+
+(defun run-sem-while-tests ()
+  "Запускает успешные и ошибочные проверки while."
+  (run-sem-ok-cases "СЕМАНТИКА: while ok"
+                    (build-sem-while-ok-cases))
+  (run-sem-error-cases "СЕМАНТИКА: while error"
+                       (build-sem-while-error-cases)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: СЕМАНТИКА — for
+;;;; ============================================================
+
+(defun build-sem-for-ok-cases ()
+  "Создаёт успешные проверки ограниченных циклов for."
+  (list
+   (list "for: local counter"
+         "for (let i = 0; i < 3; i = i + 1) {}")
+   (list "for: outer counter"
+         "let i = 0 for (i = 0; i < 3; i = i + 1) {}")
+   (list "for: return in function"
+         "function f() { for (let i = 0; i < 3; i = i + 1) { return i } }")))
+
+(defun build-sem-for-error-cases ()
+  "Создаёт ошибочные проверки ограниченных циклов for."
+  (list
+   (list "for: counter outside"
+         "for (let i = 0; i < 3; i = i + 1) {} let x = i"
+         "необъявленное имя")
+   (list "for: missing outer counter"
+         "for (i = 0; i < 3; i = i + 1) {}"
+         "необъявленное имя")
+   (list "for: const step"
+         "for (const i = 0; i < 3; i = i + 1) {}"
+         "нельзя изменять")))
+
+(defun run-sem-for-tests ()
+  "Запускает успешные и ошибочные проверки for."
+  (run-sem-ok-cases "СЕМАНТИКА: for ok"
+                    (build-sem-for-ok-cases))
+  (run-sem-error-cases "СЕМАНТИКА: for error"
+                       (build-sem-for-error-cases)))
 
 ;;;; ============================================================
 ;;;; МОДУЛЬ: СЕМАНТИКА — 1 объявления (ok)
@@ -818,13 +1283,430 @@
   "Считает прочие ошибочные кейсы."
   (length (build-sem-other-error-cases)))
 
+(defun count-control-stack-cases ()
+  "Считает проверки управляющего стека."
+  1)
+
+(defun count-binding-mutable-cases ()
+  "Считает проверки изменяемости привязок."
+  (length (build-binding-mutable-cases)))
+
+(defun count-sem-function-ok-cases ()
+  "Считает успешные проверки функций."
+  (length (build-sem-function-ok-cases)))
+
+(defun count-sem-function-error-cases ()
+  "Считает ошибочные проверки функций."
+  (length (build-sem-function-error-cases)))
+
+(defun count-sem-while-ok-cases ()
+  "Считает успешные проверки while."
+  (length (build-sem-while-ok-cases)))
+
+(defun count-sem-while-error-cases ()
+  "Считает ошибочные проверки while."
+  (length (build-sem-while-error-cases)))
+
+(defun count-sem-for-ok-cases ()
+  "Считает успешные проверки for."
+  (length (build-sem-for-ok-cases)))
+
+(defun count-sem-for-error-cases ()
+  "Считает ошибочные проверки for."
+  (length (build-sem-for-error-cases)))
+
+(defun count-function-predeclaration-cases ()
+  "Считает проверки предварительных объявлений функций."
+  1)
+
 (defun run-semantics-tests ()
   "Запускает все автотесты семантики."
+  (run-binding-mutable-tests)
+  (run-function-predeclaration-tests)
+  (run-control-stack-tests)
+  (run-sem-function-tests)
+  (run-sem-while-tests)
+  (run-sem-for-tests)
   (run-sem-decl-ok-tests)
   (run-sem-usage-tests)
   (run-sem-assign-tests)
   (run-sem-scope-tests)
   (run-sem-other-error-tests))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: ТРАНСФОРМЕР — выражения
+;;;; ============================================================
+
+(defpackage :js-to-lisp-tests-output
+  (:use :cl))
+
+(defconstant +test-output-package+ :js-to-lisp-tests-output
+  "Пакет, куда проверки складывают имена переведённого JS.")
+
+(defun call-in-output-package (thunk)
+  "Вызывает thunk с *package*, привязанным к пакету выхода проверок."
+  (let ((*package* (find-package +test-output-package+)))
+    (funcall thunk)))
+
+(defun form->string (form)
+  "Печатает список Common Lisp строкой в пакете выхода проверок."
+  (let ((*print-case* :upcase)
+        (*print-pretty* nil))
+    (call-in-output-package (lambda () (prin1-to-string form)))))
+
+(defun transform-expression-source (input)
+  "Прогоняет строку выражения JS: lex → parse-expression-tokens → transform."
+  (call-in-output-package
+   (lambda ()
+     (transform-expression (parse-expression-tokens (lex input))
+                           (make-transform-state)))))
+
+(defun print-transform-pass (name input actual)
+  "Печатает успешный результат теста трансформера."
+  (format t "~&[PASS] ~a~%  input: ~s~%  output: ~a~%" name input actual))
+
+(defun print-transform-fail (name input expected actual)
+  "Печатает провал теста трансформера перед error."
+  (format t "~&[FAIL] ~a~%  input: ~s~%  ожидание: ~a~%  получено: ~a~%"
+          name input expected actual))
+
+(defun assert-transform-expression (name input expected)
+  "Сравнивает печать результата преобразования с эталоном expected."
+  (let ((actual (form->string (transform-expression-source input))))
+    (unless (string= actual expected)
+      (print-transform-fail name input expected actual)
+      (error "Тест ~s провален" name))
+    (print-transform-pass name input actual)))
+
+(defun run-transform-cases (section-name cases)
+  "Запускает список кейсов трансформера; один провал — стоп."
+  (format t "~&==== ~a (~a) ====~%" section-name (length cases))
+  (dolist (case cases)
+    (destructuring-bind (name input expected) case
+      (assert-transform-expression name input expected))))
+
+(defun build-transform-leaf-cases ()
+  "Создаёт кейсы листьев: имя, число, булевы, скобки."
+  (list
+   (list "leaf: atom" "x" "X")
+   (list "leaf: number" "42" "42")
+   (list "leaf: true" "true" "T")
+   (list "leaf: false" "false" "NIL")
+   (list "leaf: group" "(x)" "X")))
+
+(defun build-transform-unary-cases ()
+  "Создаёт кейсы унарных операций."
+  (list
+   (list "unary: minus" "-x" "(- X)")
+   (list "unary: not" "!x" "(NOT X)")
+   (list "unary: double" "!!x" "(NOT (NOT X))")))
+
+(defun build-transform-binary-cases ()
+  "Создаёт кейсы бинарных операций и приоритетов."
+  (list
+   (list "binary: add" "a + b" "(+ A B)")
+   (list "binary: mul first" "a + b * 2" "(+ A (* B 2))")
+   (list "binary: group first" "(a + b) * 2" "(* (+ A B) 2)")
+   (list "binary: left assoc" "a - b - c" "(- (- A B) C)")
+   (list "binary: rem" "a % 2" "(REM A 2)")
+   (list "binary: compare" "a < 10" "(< A 10)")
+   (list "binary: equal" "a === b" "(EQUAL A B)")
+   (list "binary: not equal" "a !== b" "(NOT (EQUAL A B))")
+   (list "binary: logic" "a > 0 && b > 0" "(AND (> A 0) (> B 0))")))
+
+(defun build-transform-call-cases ()
+  "Создаёт кейсы вызовов функций."
+  (list
+   (list "call: no args" "run()" "(RUN)")
+   (list "call: two args" "add(a, b)" "(ADD A B)")
+   (list "call: nested" "add(next(), 1 + 2)" "(ADD (NEXT) (+ 1 2))")
+   (list "call: unary before" "-next()" "(- (NEXT))")))
+
+(defun assert-transform-reserved-name ()
+  "Проверяет, что имя из пакета CL даёт ошибку трансформера."
+  (handler-case
+      (progn (transform-expression-source "list")
+             (error "Тест зарезервированного имени: ошибки не было"))
+    (error (condition)
+      (let ((message (format nil "~a" condition)))
+        (unless (search "зарезервировано" message)
+          (error "Тест зарезервированного имени: неверное сообщение ~s" message))
+        (print-transform-pass "reserved: list" "list" message)))))
+
+(defun run-transform-reserved-name-tests ()
+  "Запускает проверку зарезервированных имён."
+  (format t "~&==== ТРАНСФОРМЕР: зарезервированные имена (1) ====~%")
+  (assert-transform-reserved-name))
+
+(defun count-transform-reserved-name-cases ()
+  "Считает проверки зарезервированных имён."
+  1)
+
+;;;; ============================================================
+;;;; МОДУЛЬ: ГЕНЕРАТОР — текст файла
+;;;; ============================================================
+
+(defun generate-source (input)
+  "Прогоняет строку JS через js-generate в пакете выхода проверок."
+  (call-in-output-package (lambda () (js-generate input))))
+
+(defun assert-generate (name input expected)
+  "Сравнивает текст генератора с эталоном expected."
+  (let ((actual (generate-source input)))
+    (unless (string= actual expected)
+      (print-transform-fail name input expected actual)
+      (error "Тест ~s провален" name))
+    (print-transform-pass name input actual)))
+
+(defun expected-header ()
+  "Ожидаемая шапка файла для пакета выхода проверок."
+  (format nil ";;;; Сгенерировано транслятором js-to-lisp~%(in-package :js-to-lisp-tests-output)~%~%"))
+
+(defun build-generate-cases ()
+  "Создаёт кейсы генератора: шапка, регистр, разделение форм."
+  (list
+   (list "gen: one form" "let a = 1"
+         (format nil "~a(defparameter a 1)~%" (expected-header)))
+   (list "gen: two forms blank line" "let a = 1 a = a + 1"
+         (format nil "~a(defparameter a 1)~%~%(setf a (+ a 1))~%" (expected-header)))
+   (list "gen: empty program" ""
+         (format nil "~a~%" (expected-header)))))
+
+(defun run-generate-tests ()
+  "Запускает проверки генератора."
+  (let ((cases (build-generate-cases)))
+    (format t "~&==== ГЕНЕРАТОР (~a) ====~%" (length cases))
+    (dolist (case cases)
+      (destructuring-bind (name input expected) case
+        (assert-generate name input expected)))))
+
+(defun count-generate-cases ()
+  "Считает проверки генератора."
+  (length (build-generate-cases)))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: ЕДИНОЕ ЛИЦО — этапы, js-run, макрос js
+;;;; ============================================================
+
+(defun assert-api-value (name actual expected)
+  "Сравнивает значение этапа с эталоном через equal."
+  (unless (equal actual expected)
+    (print-transform-fail name "-" expected actual)
+    (error "Тест ~s провален" name))
+  (print-transform-pass name "-" actual))
+
+(js "function twice(a) { return a + a }")
+
+(defun run-api-tests ()
+  "Запускает проверки единого лица библиотеки."
+  (format t "~&==== ЕДИНОЕ ЛИЦО (6) ====~%")
+  (assert-api-value "api: js-lex tokens"
+                    (token-p (first (js-lex "let a = 1"))) t)
+  (assert-api-value "api: js-parse from tokens"
+                    (node-p (js-parse (js-lex "let a = 1"))) t)
+  (assert-api-value "api: js-check returns ast"
+                    (node-construct (js-check "let a = 1")) +construct-program+)
+  (assert-api-value "api: js-run value"
+                    (call-in-output-package
+                     (lambda ()
+                       (js-run "function add(a, b) { return a + b } add(2, 3)")))
+                    5)
+  (assert-api-value "api: js-run forms from js-transform"
+                    (call-in-output-package
+                     (lambda () (js-run (js-transform "let x = 3 x = x + 4"))))
+                    7)
+  (assert-api-value "api: macro js defines function"
+                    (twice 4) 8))
+
+(defun count-api-cases ()
+  "Считает проверки единого лица."
+  6)
+
+(defun run-transform-expression-tests ()
+  "Запускает все проверки преобразования выражений."
+  (run-transform-cases "ТРАНСФОРМЕР: листья" (build-transform-leaf-cases))
+  (run-transform-cases "ТРАНСФОРМЕР: унарные" (build-transform-unary-cases))
+  (run-transform-cases "ТРАНСФОРМЕР: бинарные" (build-transform-binary-cases))
+  (run-transform-cases "ТРАНСФОРМЕР: вызовы" (build-transform-call-cases)))
+
+(defun count-transform-expression-cases ()
+  "Считает проверки преобразования выражений."
+  (+ (length (build-transform-leaf-cases))
+     (length (build-transform-unary-cases))
+     (length (build-transform-binary-cases))
+     (length (build-transform-call-cases))))
+
+;;;; ============================================================
+;;;; МОДУЛЬ: ТРАНСФОРМЕР — простые инструкции
+;;;; ============================================================
+
+(defun first-statement-from-source (input)
+  "Разбирает программу из строки и возвращает её первую инструкцию."
+  (first (node-children (parse (lex input)))))
+
+(defun transform-statement-source (input)
+  "Прогоняет строку с одной инструкцией JS через transform-statement."
+  (call-in-output-package
+   (lambda ()
+     (transform-statement (first-statement-from-source input)
+                          (make-transform-state)))))
+
+(defun assert-transform-statement (name input expected)
+  "Сравнивает печать преобразованной инструкции с эталоном expected."
+  (let ((actual (form->string (transform-statement-source input))))
+    (unless (string= actual expected)
+      (print-transform-fail name input expected actual)
+      (error "Тест ~s провален" name))
+    (print-transform-pass name input actual)))
+
+(defun run-transform-statement-cases (section-name cases)
+  "Запускает список кейсов инструкций трансформера; один провал — стоп."
+  (format t "~&==== ~a (~a) ====~%" section-name (length cases))
+  (dolist (case cases)
+    (destructuring-bind (name input expected) case
+      (assert-transform-statement name input expected))))
+
+(defun build-transform-assignment-cases ()
+  "Создаёт кейсы присваивания и вызова как инструкции."
+  (list
+   (list "stmt: assignment" "a = 10" "(SETF A 10)")
+   (list "stmt: assignment expr" "a = a + 1" "(SETF A (+ A 1))")
+   (list "stmt: call" "run(1)" "(RUN 1)")))
+
+(defun build-transform-if-cases ()
+  "Создаёт кейсы условия if."
+  (list
+   (list "stmt: if" "if (a > 0) { a = 1 }"
+         "(IF (> A 0) (PROGN (SETF A 1)))")
+   (list "stmt: if else" "if (a > 0) { a = 1 } else { a = 2 }"
+         "(IF (> A 0) (PROGN (SETF A 1)) (PROGN (SETF A 2)))")
+   (list "stmt: if empty" "if (a) {}"
+         "(IF A (PROGN))")))
+
+(defun build-transform-while-cases ()
+  "Создаёт кейсы цикла while."
+  (list
+   (list "stmt: while" "while (a < 3) { a = a + 1 }"
+         "(LOOP WHILE (< A 3) DO (SETF A (+ A 1)))")
+   (list "stmt: while two" "while (a < 3) { a = a + 1 run() }"
+         "(LOOP WHILE (< A 3) DO (SETF A (+ A 1)) (RUN))")
+   (list "stmt: while nested if" "while (a < 3) { if (a) { a = 0 } }"
+         "(LOOP WHILE (< A 3) DO (IF A (PROGN (SETF A 0))))")))
+
+(defun build-transform-declaration-cases ()
+  "Создаёт кейсы объявлений let/const с захватом хвоста."
+  (list
+   (list "decl: lone let" "let a = 1" "(LET ((A 1)))")
+   (list "decl: lone const" "const a = 1" "(LET ((A 1)))")
+   (list "decl: let with tail" "{ let a = 1 a = a + 1 }"
+         "(PROGN (LET ((A 1)) (SETF A (+ A 1))))")
+   (list "decl: two lets nest" "{ let a = 1 a = a + 1 let b = 2 b = a }"
+         "(PROGN (LET ((A 1)) (SETF A (+ A 1)) (LET ((B 2)) (SETF B A))))")
+   (list "decl: before let stays outside" "{ run() let a = 1 a = 2 }"
+         "(PROGN (RUN) (LET ((A 1)) (SETF A 2)))")
+   (list "decl: inside while body" "while (a) { let b = a a = b }"
+         "(LOOP WHILE A DO (LET ((B A)) (SETF A B)))")))
+
+(defun build-transform-function-cases ()
+  "Создаёт кейсы функций и return."
+  (list
+   (list "func: lone empty" "function run() {}"
+         "(LABELS ((RUN NIL)))")
+   (list "func: return value" "function add(a, b) { return a + b }"
+         "(LABELS ((ADD (A B) (RETURN-FROM ADD (+ A B)))))")
+   (list "func: return bare" "function f() { return }"
+         "(LABELS ((F NIL (RETURN-FROM F))))")
+   (list "func: call before declaration" "{ run() function run() {} }"
+         "(PROGN (LABELS ((RUN NIL)) (RUN)))")
+   (list "func: two functions one labels"
+         "{ function f() {} function g() {} f() }"
+         "(PROGN (LABELS ((F NIL) (G NIL)) (F)))")
+   (list "func: let inside body" "function f(a) { let b = a return b }"
+         "(LABELS ((F (A) (LET ((B A)) (RETURN-FROM F B)))))")
+   (list "func: nested return names inner"
+         "function f() { function g() { return 1 } return g() }"
+         "(LABELS ((F NIL (LABELS ((G NIL (RETURN-FROM G 1))) (RETURN-FROM F (G))))))")
+   (list "func: return in while" "function f(a) { while (a) { return a } }"
+         "(LABELS ((F (A) (LOOP WHILE A DO (RETURN-FROM F A)))))")))
+
+(defun build-transform-for-cases ()
+  "Создаёт кейсы цикла for."
+  (list
+   (list "for: let counter" "for (let i = 0; i < 3; i = i + 1) { run(i) }"
+         "(LET ((I 0)) (LOOP WHILE (< I 3) DO (RUN I) (SETF I (+ I 1))))")
+   (list "for: outer counter" "for (i = 0; i < 3; i = i + 1) { run(i) }"
+         "(PROGN (SETF I 0) (LOOP WHILE (< I 3) DO (RUN I) (SETF I (+ I 1))))")
+   (list "for: empty body" "for (let i = 0; i < 3; i = i + 1) {}"
+         "(LET ((I 0)) (LOOP WHILE (< I 3) DO (SETF I (+ I 1))))")
+   (list "for: let in body" "for (let i = 0; i < 3; i = i + 1) { let x = i run(x) }"
+         "(LET ((I 0)) (LOOP WHILE (< I 3) DO (LET ((X I)) (RUN X)) (SETF I (+ I 1))))")))
+
+(defun forms->string (forms)
+  "Печатает список форм одной строкой через разделитель ' | '."
+  (format nil "~{~a~^ | ~}" (mapcar #'form->string forms)))
+
+(defun transform-program-source (input)
+  "Прогоняет строку программы JS: lex → parse → transform-program."
+  (call-in-output-package
+   (lambda () (transform-program (parse (lex input))))))
+
+(defun assert-transform-program (name input expected)
+  "Сравнивает печать всех форм программы с эталоном expected."
+  (let ((actual (forms->string (transform-program-source input))))
+    (unless (string= actual expected)
+      (print-transform-fail name input expected actual)
+      (error "Тест ~s провален" name))
+    (print-transform-pass name input actual)))
+
+(defun build-transform-program-cases ()
+  "Создаёт кейсы верхнего уровня программы."
+  (list
+   (list "program: let" "let a = 1" "(DEFPARAMETER A 1)")
+   (list "program: const" "const a = 1" "(DEFPARAMETER A 1)")
+   (list "program: function" "function add(a, b) { return a + b }"
+         "(DEFUN ADD (A B) (RETURN-FROM ADD (+ A B)))")
+   (list "program: order kept" "let a = 1 a = a + 1 run(a)"
+         "(DEFPARAMETER A 1) | (SETF A (+ A 1)) | (RUN A)")
+   (list "program: functions first" "run() function run() {}"
+         "(DEFUN RUN NIL) | (RUN)")
+   (list "program: block keeps let" "{ let a = 1 a = 2 }"
+         "(PROGN (LET ((A 1)) (SETF A 2)))")))
+
+(defun run-transform-program-tests ()
+  "Запускает проверки верхнего уровня программы."
+  (let ((cases (build-transform-program-cases)))
+    (format t "~&==== ТРАНСФОРМЕР: программа (~a) ====~%" (length cases))
+    (dolist (case cases)
+      (destructuring-bind (name input expected) case
+        (assert-transform-program name input expected)))))
+
+(defun count-transform-program-cases ()
+  "Считает проверки верхнего уровня программы."
+  (length (build-transform-program-cases)))
+
+(defun run-transform-statement-tests ()
+  "Запускает все проверки преобразования инструкций."
+  (run-transform-statement-cases "ТРАНСФОРМЕР: присваивание"
+                                 (build-transform-assignment-cases))
+  (run-transform-statement-cases "ТРАНСФОРМЕР: if"
+                                 (build-transform-if-cases))
+  (run-transform-statement-cases "ТРАНСФОРМЕР: while"
+                                 (build-transform-while-cases))
+  (run-transform-statement-cases "ТРАНСФОРМЕР: let/const"
+                                 (build-transform-declaration-cases))
+  (run-transform-statement-cases "ТРАНСФОРМЕР: функции"
+                                 (build-transform-function-cases))
+  (run-transform-statement-cases "ТРАНСФОРМЕР: for"
+                                 (build-transform-for-cases)))
+
+(defun count-transform-statement-cases ()
+  "Считает проверки преобразования инструкций."
+  (+ (length (build-transform-assignment-cases))
+     (length (build-transform-if-cases))
+     (length (build-transform-while-cases))
+     (length (build-transform-declaration-cases))
+     (length (build-transform-function-cases))
+     (length (build-transform-for-cases))))
 
 ;;;; ============================================================
 ;;;; ЗАПУСК
@@ -843,6 +1725,22 @@
 (defun count-parser-node-type-cases ()
   "Считает число кейсов типов узлов парсера."
   (length (build-parser-node-type-cases)))
+
+(defun count-function-parameters-cases ()
+  "Считает число кейсов параметров функции."
+  (length (build-function-parameters-cases)))
+
+(defun count-function-cases ()
+  "Считает число кейсов объявлений function."
+  (length (build-function-cases)))
+
+(defun count-return-cases ()
+  "Считает число кейсов инструкции return."
+  (length (build-return-cases)))
+
+(defun count-call-cases ()
+  "Считает число кейсов вызовов функции."
+  (length (build-call-cases)))
 
 (defun count-parser-similar-cases ()
   "Считает число кейсов похожих случаев парсера."
@@ -868,11 +1766,25 @@
   "Считает число пограничных кейсов парсера."
   (length (build-parser-edge-cases)))
 
+(defun count-while-cases ()
+  "Считает проверки разбора while."
+  (length (build-while-cases)))
+
+(defun count-for-cases ()
+  "Считает проверки разбора for."
+  (length (build-for-cases)))
+
 (defun run-all-tests ()
   "Запускает все автотесты; при успехе печатает итог."
   (let ((total (+ (count-generated-cases)
                   (count-manual-lexer-cases)
                   (count-parser-node-type-cases)
+                  (count-function-parameters-cases)
+                  (count-function-cases)
+                  (count-return-cases)
+                  (count-call-cases)
+                  (count-while-cases)
+                  (count-for-cases)
                   (count-parser-similar-cases)
                   (count-generated-parser-cases)
                   (count-parser-precedence-cases)
@@ -886,9 +1798,30 @@
                   (count-sem-assign-error-cases)
                   (count-sem-scope-ok-cases)
                   (count-sem-scope-error-cases)
-                  (count-sem-other-error-cases))))
+                  (count-sem-other-error-cases)
+                  (count-binding-mutable-cases)
+                  (count-sem-function-ok-cases)
+                  (count-sem-function-error-cases)
+                  (count-sem-while-ok-cases)
+                  (count-sem-while-error-cases)
+                  (count-sem-for-ok-cases)
+                  (count-sem-for-error-cases)
+                  (count-function-predeclaration-cases)
+                  (count-control-stack-cases)
+                  (count-transform-expression-cases)
+                  (count-transform-statement-cases)
+                  (count-transform-program-cases)
+                  (count-transform-reserved-name-cases)
+                  (count-generate-cases)
+                  (count-api-cases))))
     (run-generated-lexer-tests)
     (run-manual-lexer-tests)
+    (run-function-parameters-tests)
+    (run-function-tests)
+    (run-return-tests)
+    (run-call-tests)
+    (run-while-tests)
+    (run-for-tests)
     (run-parser-node-type-tests)
     (run-parser-similar-tests)
     (run-generated-parser-tests)
@@ -897,6 +1830,12 @@
     (run-parser-complex-tests)
     (run-parser-edge-tests)
     (run-semantics-tests)
+    (run-transform-expression-tests)
+    (run-transform-statement-tests)
+    (run-transform-program-tests)
+    (run-transform-reserved-name-tests)
+    (run-generate-tests)
+    (run-api-tests)
     (format t "~&==== ИТОГ ====~%OK: ~a tests~%" total)))
 
 (run-all-tests)
